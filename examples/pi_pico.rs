@@ -1,6 +1,7 @@
 #![no_std]
 #![no_main]
 
+use bbqueue::{BBBuffer, Producer};
 use bsp::entry;
 use bsp::hal::{
     clocks::{Clock, init_clocks_and_plls},
@@ -21,6 +22,9 @@ use usb_device::{
 };
 use usbd_human_interface_device::device::fido::{RawFidoConfig, RawFidoReport};
 use usbd_human_interface_device::prelude::*;
+
+// 7609 is maximum size of a CTAPHID message
+static OUTGOING_MESSAGE_BYTES: BBBuffer<7609> = BBBuffer::new();
 
 #[entry]
 fn main() -> ! {
@@ -93,10 +97,11 @@ fn main() -> ! {
     let mut raw_response = RawFidoReport::default();
     let mut cid_next: u32 = 1;
 
+    let (mut tx, mut rx) = OUTGOING_MESSAGE_BYTES.try_split().unwrap();
+
     // as per FIDO CTAP spec maximum payload size is 7609 bytes
-    let mut message_buffer = [0u8; 7609];
-    let mut current_payload_size = 0usize;
-    let mut current_payload_bytes_written = 0usize;
+    let mut in_progress_message_option: Option<InProgressMessage> = None;
+    let mut initialization_packet = true;
     loop {
         if flash_led.wait().is_ok() {
             led_state = !led_state;
@@ -115,39 +120,42 @@ fn main() -> ! {
                 Err(e) => {
                     core::panic!("Failed to read fido report: {:?}", e)
                 }
-                Ok(report) =>
-                //
-                {
+                Ok(report) => {
                     let request = parse_request(&report);
                     let response = match request.ty {
                         FidoRequestTy::Ping => Some(FidoResponseTy::RawReport(report)),
                         FidoRequestTy::Message { length, data } => {
-                            current_payload_size = length as usize;
-                            current_payload_bytes_written = 0;
-                            message_buffer[0..57].copy_from_slice(&data);
-
-                            current_payload_bytes_written += 57;
-                            if current_payload_bytes_written >= current_payload_size {
-                                current_payload_size = 0;
-                                respond_to_message(&message_buffer[..current_payload_size]);
-                                None
-                            } else {
-                                None
+                            if in_progress_message_option.is_some() {
+                                // TODO: error due to in progress transaction
                             }
+
+                            in_progress_message_option = Some(InProgressMessage {
+                                cid: request.cid,
+                                buffer: [0; 7609],
+                                current_payload_size: length as usize,
+                                current_payload_bytes_written: 0,
+                            });
+                            if let Some(in_progress_message) = &mut in_progress_message_option {
+                                if in_progress_message.write_data(&data, &mut tx) {
+                                    in_progress_message_option = None;
+                                }
+                            }
+                            None
                         }
                         FidoRequestTy::Continuation { data, .. } => {
-                            message_buffer[0..59].copy_from_slice(&data);
-
-                            current_payload_bytes_written += 59;
-                            if current_payload_bytes_written >= current_payload_size {
-                                current_payload_size = 0;
-                                respond_to_message(&message_buffer[..current_payload_size]);
-                                None
-                            } else {
-                                None
+                            if let Some(in_progress_message) = &mut in_progress_message_option {
+                                if in_progress_message.cid == request.cid {
+                                    if in_progress_message.write_data(&data, &mut tx) {
+                                        in_progress_message_option = None;
+                                    }
+                                } else {
+                                    // TODO: error or maybe just drop it
+                                }
                             }
+                            None
                         }
                         FidoRequestTy::Init { nonce8 } => {
+                            // TODO: handle broadcast CID
                             cid_next += 1;
                             Some(FidoResponseTy::Init(InitResponse {
                                 nonce_8_bytes: nonce8,
@@ -180,12 +188,80 @@ fn main() -> ! {
                 }
             }
         }
+
+        let granted = rx.read().unwrap();
+        let packet_size = if initialization_packet {
+            initialization_packet = false;
+            granted.len().min(57)
+        } else {
+            granted.len().min(59)
+        };
+        if packet_size > 0 {
+            FidoResponse {
+                cid: 0, // TODO
+                ty: FidoResponseTy::Message {
+                    length: packet_size as u16,
+                    data: granted[..packet_size].try_into().unwrap(),
+                },
+            }
+            .encode(&mut raw_response);
+            granted.release(packet_size);
+
+            match fido.device().write_report(&raw_response) {
+                Err(UsbHidError::WouldBlock) => {}
+                Err(UsbHidError::Duplicate) => {}
+                Ok(_) => {}
+                Err(e) => {
+                    core::panic!("Failed to write fido report: {:?}", e)
+                }
+            }
+        }
     }
 }
 
-fn respond_to_message(message_data: &[u8]) {
-    let _request = MessageRequest::decode(message_data);
-    enter_flash_mode();
+struct InProgressMessage {
+    cid: u32,
+    buffer: [u8; 7609],
+    current_payload_size: usize,
+    current_payload_bytes_written: usize,
+}
+
+impl InProgressMessage {
+    /// Returns true if the request has finished parsing and the response was sent
+    fn write_data(&mut self, data: &[u8], tx: &mut Producer<7609>) -> bool {
+        self.buffer
+            [self.current_payload_bytes_written..self.current_payload_bytes_written + data.len()]
+            .copy_from_slice(data);
+
+        // if we have completely received the request, respond to it.
+        self.current_payload_bytes_written += data.len();
+        if self.current_payload_bytes_written >= self.current_payload_size {
+            respond_to_message(&self.buffer[..self.current_payload_size], tx);
+            true
+        } else {
+            false
+        }
+    }
+}
+
+fn respond_to_message(message_data: &[u8], tx: &mut Producer<7609>) {
+    let request = MessageRequest::decode(message_data);
+
+    let response = match request {
+        MessageRequest::Register { .. } => enter_flash_mode(),
+        MessageRequest::Authenticate { .. } => {
+            enter_flash_mode();
+        }
+        MessageRequest::Version => MessageResponse::Version,
+        MessageRequest::Unknown { .. } => {
+            // TODO: error handling
+            enter_flash_mode();
+        }
+    };
+
+    let mut granted = tx.grant_exact(7609).unwrap();
+    response.encode(&mut granted);
+    granted.commit(7609);
 }
 
 fn enter_flash_mode() -> ! {
@@ -195,7 +271,7 @@ fn enter_flash_mode() -> ! {
 
 fn parse_request(report: &RawFidoReport) -> FidoRequest {
     let packet = &report.packet;
-    let cid: [u8; 4] = packet[0..4].try_into().unwrap();
+    let cid = u32::from_be_bytes(packet[0..4].try_into().unwrap());
     let ty = if packet[4] & 0b10000000 == 0 {
         FidoRequestTy::Continuation {
             sequence: packet[4],
@@ -221,7 +297,7 @@ fn parse_request(report: &RawFidoReport) -> FidoRequest {
 }
 
 struct FidoRequest {
-    cid: [u8; 4],
+    cid: u32,
     ty: FidoRequestTy,
 }
 
@@ -254,31 +330,36 @@ pub enum FidoRequestTy {
     },
 }
 
-struct FidoResponse {
-    cid: [u8; 4],
-    ty: FidoResponseTy,
+pub struct FidoResponse {
+    pub cid: u32,
+    pub ty: FidoResponseTy,
 }
 
-enum FidoResponseTy {
+pub enum FidoResponseTy {
     /// Initialize
     Init(InitResponse),
-    #[allow(dead_code)]
-    Message,
+    Message {
+        /// Full length of the payload, possibly this packet and one or more continuation packets.
+        length: u16,
+        /// packet contents.
+        /// since header is 7 bytes long and packet is max 64 bytes this is max 57 bytes
+        data: [u8; 57],
+    },
     /// Use this to provide a response to a Ping or if you need to construct a custom response for any reason.
     RawReport(RawFidoReport),
 }
 
-struct InitResponse {
+pub struct InitResponse {
     /// 8-byte nonce
-    nonce_8_bytes: [u8; 8],
+    pub nonce_8_bytes: [u8; 8],
     /// channel ID (CID)
-    channel_id: [u8; 4],
+    pub channel_id: [u8; 4],
     /// CTAPHID protocol version identifier
-    protocol_version: u8,
-    device_version_major: u8,
-    device_version_minor: u8,
-    device_version_build: u8,
-    capabilities: u8,
+    pub protocol_version: u8,
+    pub device_version_major: u8,
+    pub device_version_minor: u8,
+    pub device_version_build: u8,
+    pub capabilities: u8,
 }
 
 impl FidoResponse {
@@ -301,23 +382,31 @@ impl FidoResponse {
                 data[16] = response.device_version_build;
                 data[17] = response.capabilities;
             }
-            FidoResponseTy::Message => {}
+            FidoResponseTy::Message { length, data } => {
+                Header {
+                    cid: self.cid,
+                    cmd: 0x83,
+                    bcnt: *length,
+                }
+                .encode(report);
+                report.packet[7..].copy_from_slice(data);
+            }
             FidoResponseTy::RawReport(raw) => *report = *raw,
         }
     }
 }
 
-struct Header {
-    cid: [u8; 4],
+pub struct Header {
+    pub cid: u32,
     /// The command indentifier
-    cmd: u8,
+    pub cmd: u8,
     /// The payload length
-    bcnt: u16,
+    pub bcnt: u16,
 }
 
 impl Header {
     fn encode(self, report: &mut RawFidoReport) {
-        report.packet[0..4].copy_from_slice(&self.cid);
+        report.packet[0..4].copy_from_slice(&self.cid.to_be_bytes());
         report.packet[4] = self.cmd;
         report.packet[5..7].copy_from_slice(&self.bcnt.to_be_bytes());
     }
@@ -349,10 +438,21 @@ impl MessageRequest {
         let ins = message_data[1];
         let p1 = message_data[2];
         let _p2 = message_data[3];
+
+        let (length, data_start) = if message_data[4] == 0 {
+            (
+                u16::from_be_bytes(message_data[5..7].try_into().unwrap()),
+                7,
+            )
+        } else {
+            (message_data[4] as u16, 5)
+        };
+        let body = &message_data[data_start..data_start + length as usize];
+
         match ins {
             0x01 => MessageRequest::Register {
-                challenge_parameter: Default::default(),
-                application_parameter: Default::default(),
+                challenge_parameter: body[0..32].try_into().unwrap(),
+                application_parameter: body[32..64].try_into().unwrap(),
             },
             0x02 => MessageRequest::Authenticate {
                 control: AuthenticateControl::decode(p1),
@@ -400,6 +500,12 @@ pub enum MessageResponse {
     },
     Error(MessageResponseError),
     Version,
+}
+
+impl MessageResponse {
+    fn encode(&self, data: &mut [u8]) {
+        //
+    }
 }
 
 pub enum MessageResponseError {
