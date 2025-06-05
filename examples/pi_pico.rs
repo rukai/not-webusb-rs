@@ -1,6 +1,7 @@
 #![no_std]
 #![no_main]
 
+use arrayvec::ArrayVec;
 use bbqueue::{BBBuffer, Producer};
 use bsp::entry;
 use bsp::hal::{
@@ -24,6 +25,8 @@ use usbd_human_interface_device::device::fido::{RawFidoConfig, RawFidoReport};
 use usbd_human_interface_device::prelude::*;
 
 // 7609 is maximum size of a CTAPHID message
+// Only contains data for one message at a time.
+// The reader can determine the total length of the message as the initial size of the buffer before it is partially sent.
 static OUTGOING_MESSAGE_BYTES: BBBuffer<7609> = BBBuffer::new();
 
 #[entry]
@@ -101,7 +104,6 @@ fn main() -> ! {
 
     // as per FIDO CTAP spec maximum payload size is 7609 bytes
     let mut in_progress_message_option: Option<InProgressMessage> = None;
-    let mut initialization_packet = true;
     loop {
         if flash_led.wait().is_ok() {
             led_state = !led_state;
@@ -134,20 +136,17 @@ fn main() -> ! {
                                 buffer: [0; 7609],
                                 current_payload_size: length as usize,
                                 current_payload_bytes_written: 0,
+                                outgoing_initialization_packet: true,
                             });
                             if let Some(in_progress_message) = &mut in_progress_message_option {
-                                if in_progress_message.write_data(&data, &mut tx) {
-                                    in_progress_message_option = None;
-                                }
+                                in_progress_message.write_data(&data, &mut tx);
                             }
                             None
                         }
                         FidoRequestTy::Continuation { data, .. } => {
                             if let Some(in_progress_message) = &mut in_progress_message_option {
                                 if in_progress_message.cid == request.cid {
-                                    if in_progress_message.write_data(&data, &mut tx) {
-                                        in_progress_message_option = None;
-                                    }
+                                    in_progress_message.write_data(&data, &mut tx);
                                 } else {
                                     // TODO: error or maybe just drop it
                                 }
@@ -189,22 +188,28 @@ fn main() -> ! {
             }
         }
 
-        let granted = rx.read().unwrap();
-        let packet_size = if initialization_packet {
-            initialization_packet = false;
-            granted.len().min(57)
-        } else {
-            granted.len().min(59)
-        };
-        if packet_size > 0 {
+        if let Some(in_progress_message) = &mut in_progress_message_option {
+            let granted = rx.read().unwrap();
+            let packet_size = if in_progress_message.outgoing_initialization_packet {
+                in_progress_message.outgoing_initialization_packet = false;
+                granted.len().min(57)
+            } else {
+                granted.len().min(59)
+            };
             FidoResponse {
-                cid: 0, // TODO
+                cid: in_progress_message.cid,
                 ty: FidoResponseTy::Message {
                     length: packet_size as u16,
                     data: granted[..packet_size].try_into().unwrap(),
                 },
             }
             .encode(&mut raw_response);
+
+            if granted.len() == packet_size {
+                // finished!!!
+                in_progress_message_option = None;
+            }
+
             granted.release(packet_size);
 
             match fido.device().write_report(&raw_response) {
@@ -224,11 +229,13 @@ struct InProgressMessage {
     buffer: [u8; 7609],
     current_payload_size: usize,
     current_payload_bytes_written: usize,
+    /// starts true, set to false once the initialization packet has been sent.
+    outgoing_initialization_packet: bool,
 }
 
 impl InProgressMessage {
     /// Returns true if the request has finished parsing and the response was sent
-    fn write_data(&mut self, data: &[u8], tx: &mut Producer<7609>) -> bool {
+    fn write_data(&mut self, data: &[u8], tx: &mut Producer<7609>) {
         self.buffer
             [self.current_payload_bytes_written..self.current_payload_bytes_written + data.len()]
             .copy_from_slice(data);
@@ -237,9 +244,6 @@ impl InProgressMessage {
         self.current_payload_bytes_written += data.len();
         if self.current_payload_bytes_written >= self.current_payload_size {
             respond_to_message(&self.buffer[..self.current_payload_size], tx);
-            true
-        } else {
-            false
         }
     }
 }
@@ -250,7 +254,22 @@ fn respond_to_message(message_data: &[u8], tx: &mut Producer<7609>) {
     let response = match request {
         MessageRequest::Register { .. } => enter_flash_mode(),
         MessageRequest::Authenticate { .. } => {
-            enter_flash_mode();
+            let signature = [
+                0x30, 0x44, // ASN.1 sequence
+                0x02, 0x20, // ASN.1 integer
+                0x7f, // make sure not all zero
+                0, 0, 0, 0, // TODO
+                0, // TODO
+                0x02, 0x20, // ASN.1 integer
+                0x7F, // make sure not all zero
+            ]
+            .into_iter()
+            .collect();
+            MessageResponse::Authenticate {
+                user_presence: true,
+                counter: 0,
+                signature,
+            }
         }
         MessageRequest::Version => MessageResponse::Version,
         MessageRequest::Unknown { .. } => {
@@ -260,8 +279,8 @@ fn respond_to_message(message_data: &[u8], tx: &mut Producer<7609>) {
     };
 
     let mut granted = tx.grant_exact(7609).unwrap();
-    response.encode(&mut granted);
-    granted.commit(7609);
+    let size = response.encode(&mut granted);
+    granted.commit(size);
 }
 
 fn enter_flash_mode() -> ! {
@@ -456,9 +475,10 @@ impl MessageRequest {
             },
             0x02 => MessageRequest::Authenticate {
                 control: AuthenticateControl::decode(p1),
+                // TODO: parse
                 challenge_parameter: Default::default(),
                 application_parameter: Default::default(),
-                key_handle_length: Default::default(),
+                key_handle_length: 255, //TODO
                 key_handle: [0; 255],
             },
             _ => MessageRequest::Unknown { cla, ins },
@@ -490,33 +510,85 @@ pub enum MessageResponse {
         user_public_key: [u8; 65],
         key_handle_length: u8,
         key_handle: [u8; 255],
-        attestation_certificate: [u8; 255], // There seems to be no maximum length, not sure what to do here.
+        attestation_certificate: [u8; 255], // TODO: There seems to be no maximum length, not sure what to do here.
         signature: [u8; 73],
     },
     Authenticate {
         user_presence: bool,
         counter: u32,
-        signature: [u8; 255], // There seems to be no maximum length, not sure what to do here.
+        signature: ArrayVec<u8, 255>, // TODO: There seems to be no maximum length, not sure what to do here.
     },
     Error(MessageResponseError),
     Version,
 }
 
 impl MessageResponse {
-    fn encode(&self, data: &mut [u8]) {
-        //
+    /// returns the amount of bytes written
+    fn encode(&self, data: &mut [u8]) -> usize {
+        match self {
+            MessageResponse::Register {
+                user_public_key,
+                key_handle_length,
+                key_handle,
+                attestation_certificate,
+                signature,
+            } => {
+                data[0] = 5;
+                data[1..65].copy_from_slice(user_public_key);
+                data[65] = *key_handle_length; // TODO: shift along based on length
+                data[66..321].copy_from_slice(key_handle);
+                data[321..577].copy_from_slice(attestation_certificate);
+                data[577..650].copy_from_slice(signature);
+
+                // success
+                data[651] = 0x90;
+                data[652] = 0x00;
+
+                // TODO: dynamically derive
+                652
+            }
+            MessageResponse::Authenticate {
+                user_presence,
+                counter,
+                signature,
+            } => {
+                data[0] = if *user_presence { 1 } else { 0 };
+                data[1..5].copy_from_slice(&counter.to_be_bytes());
+                data[1..5].copy_from_slice(&counter.to_be_bytes());
+                data[1..5].copy_from_slice(&counter.to_be_bytes());
+
+                let status_codes_offset = 5 + signature.len();
+                data[5..status_codes_offset].copy_from_slice(signature);
+
+                // success
+                data[status_codes_offset] = 0x90;
+                data[status_codes_offset + 1] = 0x00;
+
+                status_codes_offset + 2
+            }
+            MessageResponse::Error(_) => enter_flash_mode(),
+            MessageResponse::Version => {
+                data[..6].copy_from_slice("U2F_V2".as_bytes());
+
+                // success
+                data[7] = 0x90;
+                data[8] = 0x00;
+
+                8
+            }
+        }
     }
 }
 
 pub enum MessageResponseError {
     /// The request was rejected due to test-of-user-presence being required.
-    ConditionsNotSatisfied,
+    ConditionsNotSatisfied = 0x6985,
     /// The request was rejected due to an invalid key handle.
-    WrongData,
+    WrongData = 0x6A80,
     /// The length of the request was invalid.
-    WrongLength,
+    WrongLength = 0x6700,
     /// The Class byte of the request is not supported.
-    ClaNotSupported,
+    ClaNotSupported = 0x6E00,
     /// The Instruction of the request is not supported.
-    InsNotSupported,
+    InsNotSupported = 0x6D00,
 }
