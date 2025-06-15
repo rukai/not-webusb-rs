@@ -27,11 +27,34 @@ arrayvec = { version = "0.7.6", default-features = false }
 cortex-m = "0.7.7"
 cortex-m-rt = "0.7.5"
 embedded-hal = "1.0.0"
-panic-halt = "1.0.0"
 pio = "0.2.1"
 rp-pico = "0.9.0"
 bbqueue = { version = "0.5.1", features = ["thumbv6"] }
 rp2040-hal = { version = "0.10.0", features = ["critical-section-impl"] }
 
+# defmt
+defmt = "1"
+defmt-rtt = "1"
+panic-probe = { version = "1", features = ["print-defmt"] }
+usb-device = { version = "0.3", features = ["defmt"] }
+usbd-human-interface-device = { version = "0.6", features = ["defmt"] }
+
 [features]
-defmt = ["dep:defmt", "usb-device/defmt"]
+defmt = ["dep:defmt", "usb-device/defmt", "usbd-human-interface-device/defmt"]
+
+[profile.dev]
+codegen-units = 1
+debug = 2
+debug-assertions = true
+incremental = false
+opt-level = 3
+overflow-checks = true
+
+[profile.release]
+codegen-units = 1
+debug = 2
+debug-assertions = false
+incremental = false
+lto = 'fat'
+opt-level = 3
+overflow-checks = false

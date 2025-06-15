@@ -11,9 +11,12 @@ use bsp::hal::{
     watchdog::Watchdog,
 };
 use cortex_m::prelude::*;
+use defmt::panic;
+use defmt::*;
+use defmt_rtt as _;
 use embedded_hal::digital::{InputPin, OutputPin};
 use fugit::ExtU32;
-use panic_halt as _;
+use panic_probe as _;
 use rp_pico as bsp;
 use rp2040_hal::{Timer, rom_data::reset_to_usb_boot};
 use usb_device::{
@@ -104,6 +107,7 @@ fn main() -> ! {
 
     // as per FIDO CTAP spec maximum payload size is 7609 bytes
     let mut in_progress_message_option: Option<InProgressMessage> = None;
+    info!("begin main loop");
     loop {
         if flash_led.wait().is_ok() {
             led_state = !led_state;
@@ -120,15 +124,20 @@ fn main() -> ! {
                     //do nothing
                 }
                 Err(e) => {
-                    core::panic!("Failed to read fido report: {:?}", e)
+                    panic!("Failed to read fido report: {:?}", e)
                 }
                 Ok(report) => {
+                    info!("report {:?}", report.packet);
                     let request = parse_request(&report);
+                    info!("request {:?}", request);
                     let response = match request.ty {
                         FidoRequestTy::Ping => Some(FidoResponseTy::RawReport(report)),
                         FidoRequestTy::Message { length, data } => {
                             if in_progress_message_option.is_some() {
-                                // TODO: error due to in progress transaction
+                                error!(
+                                    "Cannot create new transaction while existing transaction is in progress"
+                                )
+                                // TODO: handle error
                             }
 
                             in_progress_message_option = Some(InProgressMessage {
@@ -166,7 +175,10 @@ fn main() -> ! {
                                 capabilities: 0,
                             }))
                         }
-                        FidoRequestTy::Unknown { .. } => enter_flash_mode(),
+                        FidoRequestTy::Unknown { cmd } => {
+                            // TODO: handle error
+                            panic!("Unknown command {}", cmd);
+                        }
                     };
 
                     if let Some(response) = response {
@@ -180,7 +192,7 @@ fn main() -> ! {
                             Err(UsbHidError::Duplicate) => {}
                             Ok(_) => {}
                             Err(e) => {
-                                core::panic!("Failed to write fido report: {:?}", e)
+                                panic!("Failed to write fido report: {:?}", e)
                             }
                         }
                     }
@@ -189,35 +201,38 @@ fn main() -> ! {
         }
 
         if let Some(in_progress_message) = &mut in_progress_message_option {
-            let granted = rx.read().unwrap();
-            let packet_size = if in_progress_message.outgoing_initialization_packet {
-                in_progress_message.outgoing_initialization_packet = false;
-                granted.len().min(57)
-            } else {
-                granted.len().min(59)
-            };
-            FidoResponse {
-                cid: in_progress_message.cid,
-                ty: FidoResponseTy::Message {
-                    length: packet_size as u16,
-                    data: granted[..packet_size].try_into().unwrap(),
-                },
-            }
-            .encode(&mut raw_response);
+            if let Ok(granted) = rx.read() {
+                info!("reading in_progress_message");
+                let packet_size = if in_progress_message.outgoing_initialization_packet {
+                    in_progress_message.outgoing_initialization_packet = false;
+                    granted.len().min(57)
+                } else {
+                    granted.len().min(59)
+                };
+                FidoResponse {
+                    cid: in_progress_message.cid,
+                    ty: FidoResponseTy::Message {
+                        length: packet_size as u16,
+                        data: &granted[..packet_size],
+                    },
+                }
+                .encode(&mut raw_response);
 
-            if granted.len() == packet_size {
-                // finished!!!
-                in_progress_message_option = None;
-            }
+                if granted.len() == packet_size {
+                    // finished!!!
+                    info!("finished writing response");
+                    in_progress_message_option = None;
+                }
 
-            granted.release(packet_size);
+                granted.release(packet_size);
 
-            match fido.device().write_report(&raw_response) {
-                Err(UsbHidError::WouldBlock) => {}
-                Err(UsbHidError::Duplicate) => {}
-                Ok(_) => {}
-                Err(e) => {
-                    core::panic!("Failed to write fido report: {:?}", e)
+                match fido.device().write_report(&raw_response) {
+                    Err(UsbHidError::WouldBlock) => {}
+                    Err(UsbHidError::Duplicate) => {}
+                    Ok(_) => {}
+                    Err(e) => {
+                        panic!("Failed to write fido report: {:?}", e)
+                    }
                 }
             }
         }
@@ -236,6 +251,7 @@ struct InProgressMessage {
 impl InProgressMessage {
     /// Returns true if the request has finished parsing and the response was sent
     fn write_data(&mut self, data: &[u8], tx: &mut Producer<7609>) {
+        info!("write_data");
         self.buffer
             [self.current_payload_bytes_written..self.current_payload_bytes_written + data.len()]
             .copy_from_slice(data);
@@ -249,10 +265,19 @@ impl InProgressMessage {
 }
 
 fn respond_to_message(message_data: &[u8], tx: &mut Producer<7609>) {
+    info!("decoding");
     let request = MessageRequest::decode(message_data);
+    info!("received request {:?}", request);
 
     let response = match request {
-        MessageRequest::Register { .. } => enter_flash_mode(),
+        MessageRequest::Register { .. } => MessageResponse::Register {
+            // TODO: set real values
+            user_public_key: [0; 65],
+            key_handle_length: 0,
+            key_handle: [0; 255],
+            attestation_certificate: [0; 255],
+            signature: [0; 73],
+        },
         MessageRequest::Authenticate { .. } => {
             let signature = [
                 0x30, 0x44, // ASN.1 sequence
@@ -272,9 +297,9 @@ fn respond_to_message(message_data: &[u8], tx: &mut Producer<7609>) {
             }
         }
         MessageRequest::Version => MessageResponse::Version,
-        MessageRequest::Unknown { .. } => {
+        MessageRequest::Unknown { cla, ins } => {
+            panic!("unknown message request cla={} ins={}", cla, ins);
             // TODO: error handling
-            enter_flash_mode();
         }
     };
 
@@ -284,6 +309,7 @@ fn respond_to_message(message_data: &[u8], tx: &mut Producer<7609>) {
 }
 
 fn enter_flash_mode() -> ! {
+    info!("entering flash mode");
     reset_to_usb_boot(0, 0);
     panic!()
 }
@@ -315,11 +341,13 @@ fn parse_request(report: &RawFidoReport) -> FidoRequest {
     FidoRequest { cid, ty }
 }
 
+#[derive(Format)]
 struct FidoRequest {
     cid: u32,
     ty: FidoRequestTy,
 }
 
+#[derive(Format)]
 pub enum FidoRequestTy {
     /// Initialize
     Init {
@@ -349,12 +377,12 @@ pub enum FidoRequestTy {
     },
 }
 
-pub struct FidoResponse {
+pub struct FidoResponse<'a> {
     pub cid: u32,
-    pub ty: FidoResponseTy,
+    pub ty: FidoResponseTy<'a>,
 }
 
-pub enum FidoResponseTy {
+pub enum FidoResponseTy<'a> {
     /// Initialize
     Init(InitResponse),
     Message {
@@ -362,7 +390,7 @@ pub enum FidoResponseTy {
         length: u16,
         /// packet contents.
         /// since header is 7 bytes long and packet is max 64 bytes this is max 57 bytes
-        data: [u8; 57],
+        data: &'a [u8],
     },
     /// Use this to provide a response to a Ping or if you need to construct a custom response for any reason.
     RawReport(RawFidoReport),
@@ -381,8 +409,9 @@ pub struct InitResponse {
     pub capabilities: u8,
 }
 
-impl FidoResponse {
+impl FidoResponse<'_> {
     fn encode(&self, report: &mut RawFidoReport) {
+        info!("FidoResponse::encode");
         match &self.ty {
             FidoResponseTy::Init(response) => {
                 Header {
@@ -408,7 +437,14 @@ impl FidoResponse {
                     bcnt: *length,
                 }
                 .encode(report);
-                report.packet[7..].copy_from_slice(data);
+                if data.len() > report.packet.len() - 7 {
+                    panic!(
+                        "message data is too long for one packet, was {} but must be less than or equal to {}",
+                        data.len(),
+                        report.packet.len() - 7
+                    );
+                }
+                report.packet[7..7 + data.len()].copy_from_slice(data);
             }
             FidoResponseTy::RawReport(raw) => *report = *raw,
         }
@@ -432,6 +468,7 @@ impl Header {
 }
 
 #[allow(clippy::large_enum_variant)]
+#[derive(defmt::Format)]
 pub enum MessageRequest {
     Register {
         challenge_parameter: [u8; 32],
@@ -481,11 +518,13 @@ impl MessageRequest {
                 key_handle_length: 255, //TODO
                 key_handle: [0; 255],
             },
+            0x03 => MessageRequest::Version,
             _ => MessageRequest::Unknown { cla, ins },
         }
     }
 }
 
+#[derive(defmt::Format)]
 pub enum AuthenticateControl {
     CheckOnly,
     EnforceUserPresenceAndSign,
@@ -525,6 +564,7 @@ pub enum MessageResponse {
 impl MessageResponse {
     /// returns the amount of bytes written
     fn encode(&self, data: &mut [u8]) -> usize {
+        info!("Sending response");
         match self {
             MessageResponse::Register {
                 user_public_key,
@@ -566,7 +606,9 @@ impl MessageResponse {
 
                 status_codes_offset + 2
             }
-            MessageResponse::Error(_) => enter_flash_mode(),
+            MessageResponse::Error(_) => {
+                panic!("TODO: Implement encoding for MesageResponse error")
+            }
             MessageResponse::Version => {
                 data[..6].copy_from_slice("U2F_V2".as_bytes());
 
