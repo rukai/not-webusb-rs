@@ -27,10 +27,15 @@ use usb_device::{
 use usbd_human_interface_device::device::fido::{RawFidoConfig, RawFidoReport};
 use usbd_human_interface_device::prelude::*;
 
-// 7609 is maximum size of a CTAPHID message
+// as per FIDO CTAP spec maximum payload size is 7609 bytes
+const MAXIMUM_CTAPHID_MESSAGE: usize = 7609;
+const MAXIMUM_CTAPHID_MESSAGE_X2: usize = MAXIMUM_CTAPHID_MESSAGE * 2;
+
 // Only contains data for one message at a time.
 // The reader can determine the total length of the message as the initial size of the buffer before it is partially sent.
-static OUTGOING_MESSAGE_BYTES: BBBuffer<7609> = BBBuffer::new();
+// Needs the double the number of ctaphid message max bytes since the bytes might be marked as used.
+// TODO: consider a better type than BBBuffer for this purpose.
+static OUTGOING_MESSAGE_BYTES: BBBuffer<MAXIMUM_CTAPHID_MESSAGE_X2> = BBBuffer::new();
 
 #[entry]
 fn main() -> ! {
@@ -105,7 +110,6 @@ fn main() -> ! {
 
     let (mut tx, mut rx) = OUTGOING_MESSAGE_BYTES.try_split().unwrap();
 
-    // as per FIDO CTAP spec maximum payload size is 7609 bytes
     let mut in_progress_message_option: Option<InProgressMessage> = None;
     info!("begin main loop");
     loop {
@@ -127,9 +131,8 @@ fn main() -> ! {
                     panic!("Failed to read fido report: {:?}", e)
                 }
                 Ok(report) => {
-                    info!("report {:?}", report.packet);
                     let request = parse_request(&report);
-                    info!("request {:?}", request);
+                    info!("received request {:?}", request);
                     let response = match request.ty {
                         FidoRequestTy::Ping => Some(FidoResponseTy::RawReport(report)),
                         FidoRequestTy::Message { length, data } => {
@@ -142,10 +145,10 @@ fn main() -> ! {
 
                             in_progress_message_option = Some(InProgressMessage {
                                 cid: request.cid,
-                                buffer: [0; 7609],
+                                buffer: [0; MAXIMUM_CTAPHID_MESSAGE],
                                 current_payload_size: length as usize,
                                 current_payload_bytes_written: 0,
-                                outgoing_initialization_packet: true,
+                                packet_number_in_sequence: 0,
                             });
                             if let Some(in_progress_message) = &mut in_progress_message_option {
                                 in_progress_message.write_data(&data, &mut tx);
@@ -185,6 +188,7 @@ fn main() -> ! {
                         FidoResponse {
                             cid: request.cid,
                             ty: response,
+                            packet_number_in_sequence: 0,
                         }
                         .encode(&mut raw_response);
                         match fido.device().write_report(&raw_response) {
@@ -203,8 +207,7 @@ fn main() -> ! {
         if let Some(in_progress_message) = &mut in_progress_message_option {
             if let Ok(granted) = rx.read() {
                 info!("reading in_progress_message");
-                let packet_size = if in_progress_message.outgoing_initialization_packet {
-                    in_progress_message.outgoing_initialization_packet = false;
+                let packet_size = if in_progress_message.packet_number_in_sequence == 0 {
                     granted.len().min(57)
                 } else {
                     granted.len().min(59)
@@ -215,8 +218,10 @@ fn main() -> ! {
                         length: packet_size as u16,
                         data: &granted[..packet_size],
                     },
+                    packet_number_in_sequence: in_progress_message.packet_number_in_sequence,
                 }
                 .encode(&mut raw_response);
+                in_progress_message.packet_number_in_sequence += 1;
 
                 if granted.len() == packet_size {
                     // finished!!!
@@ -241,16 +246,16 @@ fn main() -> ! {
 
 struct InProgressMessage {
     cid: u32,
-    buffer: [u8; 7609],
+    buffer: [u8; MAXIMUM_CTAPHID_MESSAGE],
     current_payload_size: usize,
     current_payload_bytes_written: usize,
-    /// starts true, set to false once the initialization packet has been sent.
-    outgoing_initialization_packet: bool,
+    /// Starts at 0, increments for every packet sent in a sequence.
+    packet_number_in_sequence: u8,
 }
 
 impl InProgressMessage {
     /// Returns true if the request has finished parsing and the response was sent
-    fn write_data(&mut self, data: &[u8], tx: &mut Producer<7609>) {
+    fn write_data(&mut self, data: &[u8], tx: &mut Producer<MAXIMUM_CTAPHID_MESSAGE_X2>) {
         info!("write_data");
         self.buffer
             [self.current_payload_bytes_written..self.current_payload_bytes_written + data.len()]
@@ -264,7 +269,7 @@ impl InProgressMessage {
     }
 }
 
-fn respond_to_message(message_data: &[u8], tx: &mut Producer<7609>) {
+fn respond_to_message(message_data: &[u8], tx: &mut Producer<MAXIMUM_CTAPHID_MESSAGE_X2>) {
     info!("decoding");
     let request = MessageRequest::decode(message_data);
     info!("received request {:?}", request);
@@ -303,7 +308,7 @@ fn respond_to_message(message_data: &[u8], tx: &mut Producer<7609>) {
         }
     };
 
-    let mut granted = tx.grant_exact(7609).unwrap();
+    let mut granted = tx.grant_exact(MAXIMUM_CTAPHID_MESSAGE).unwrap();
     let size = response.encode(&mut granted);
     granted.commit(size);
 }
@@ -379,6 +384,8 @@ pub enum FidoRequestTy {
 
 pub struct FidoResponse<'a> {
     pub cid: u32,
+    /// Starts at 0, increments for every packet sent in a sequence.
+    pub packet_number_in_sequence: u8,
     pub ty: FidoResponseTy<'a>,
 }
 
@@ -414,7 +421,7 @@ impl FidoResponse<'_> {
         info!("FidoResponse::encode");
         match &self.ty {
             FidoResponseTy::Init(response) => {
-                Header {
+                HeaderInitialization {
                     cid: self.cid,
                     cmd: 0x86,
                     bcnt: 17,
@@ -431,39 +438,70 @@ impl FidoResponse<'_> {
                 data[17] = response.capabilities;
             }
             FidoResponseTy::Message { length, data } => {
-                Header {
-                    cid: self.cid,
-                    cmd: 0x83,
-                    bcnt: *length,
+                if self.packet_number_in_sequence == 0 {
+                    HeaderInitialization {
+                        cid: self.cid,
+                        cmd: 0x83,
+                        bcnt: *length,
+                    }
+                    .encode(report);
+                    if data.len() > report.packet.len() - 7 {
+                        panic!(
+                            "message data is too long for one initial packet, was {} but must be less than or equal to {}",
+                            data.len(),
+                            report.packet.len() - 7
+                        );
+                    }
+                    report.packet[7..7 + data.len()].copy_from_slice(data);
+                } else {
+                    HeaderContinuation {
+                        cid: self.cid,
+                        seq: self.packet_number_in_sequence,
+                    }
+                    .encode(report);
+                    if data.len() > report.packet.len() - 5 {
+                        panic!(
+                            "message data is too long for one continuation packet, was {} but must be less than or equal to {}",
+                            data.len(),
+                            report.packet.len() - 5
+                        );
+                    }
+                    report.packet[5..5 + data.len()].copy_from_slice(data);
                 }
-                .encode(report);
-                if data.len() > report.packet.len() - 7 {
-                    panic!(
-                        "message data is too long for one packet, was {} but must be less than or equal to {}",
-                        data.len(),
-                        report.packet.len() - 7
-                    );
-                }
-                report.packet[7..7 + data.len()].copy_from_slice(data);
             }
             FidoResponseTy::RawReport(raw) => *report = *raw,
         }
     }
 }
 
-pub struct Header {
+pub struct HeaderInitialization {
+    /// The channel identifier
     pub cid: u32,
-    /// The command indentifier
+    /// The command identifier
     pub cmd: u8,
     /// The payload length
     pub bcnt: u16,
 }
 
-impl Header {
+impl HeaderInitialization {
     fn encode(self, report: &mut RawFidoReport) {
         report.packet[0..4].copy_from_slice(&self.cid.to_be_bytes());
         report.packet[4] = self.cmd;
         report.packet[5..7].copy_from_slice(&self.bcnt.to_be_bytes());
+    }
+}
+
+pub struct HeaderContinuation {
+    /// The channel identifier
+    pub cid: u32,
+    /// The packet sequence
+    pub seq: u8,
+}
+
+impl HeaderContinuation {
+    fn encode(self, report: &mut RawFidoReport) {
+        report.packet[0..4].copy_from_slice(&self.cid.to_be_bytes());
+        report.packet[4] = self.seq;
     }
 }
 
@@ -574,10 +612,10 @@ impl MessageResponse {
                 signature,
             } => {
                 data[0] = 5;
-                data[1..65].copy_from_slice(user_public_key);
-                data[65] = *key_handle_length; // TODO: shift along based on length
-                data[66..321].copy_from_slice(key_handle);
-                data[321..577].copy_from_slice(attestation_certificate);
+                data[1..66].copy_from_slice(user_public_key);
+                data[66] = *key_handle_length; // TODO: shift along based on length
+                data[67..322].copy_from_slice(key_handle);
+                data[322..577].copy_from_slice(attestation_certificate);
                 data[577..650].copy_from_slice(signature);
 
                 // success
@@ -585,7 +623,7 @@ impl MessageResponse {
                 data[652] = 0x00;
 
                 // TODO: dynamically derive
-                652
+                653
             }
             MessageResponse::Authenticate {
                 user_presence,
