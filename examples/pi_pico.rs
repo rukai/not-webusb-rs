@@ -132,10 +132,10 @@ fn main() -> ! {
                 }
                 Ok(report) => {
                     let request = parse_request(&report);
-                    info!("received request {:?}", request);
+                    info!("received ctaphid request {:?}", request);
                     let response = match request.ty {
-                        FidoRequestTy::Ping => Some(FidoResponseTy::RawReport(report)),
-                        FidoRequestTy::Message { length, data } => {
+                        CtapHidRequestTy::Ping => Some(CtapHidResponseTy::RawReport(report)),
+                        CtapHidRequestTy::Message { length, data } => {
                             if in_progress_message_option.is_some() {
                                 error!(
                                     "Cannot create new transaction while existing transaction is in progress"
@@ -155,7 +155,7 @@ fn main() -> ! {
                             }
                             None
                         }
-                        FidoRequestTy::Continuation { data, .. } => {
+                        CtapHidRequestTy::Continuation { data, .. } => {
                             if let Some(in_progress_message) = &mut in_progress_message_option {
                                 if in_progress_message.cid == request.cid {
                                     in_progress_message.write_data(&data, &mut tx);
@@ -165,10 +165,10 @@ fn main() -> ! {
                             }
                             None
                         }
-                        FidoRequestTy::Init { nonce8 } => {
+                        CtapHidRequestTy::Init { nonce8 } => {
                             // TODO: handle broadcast CID
                             cid_next += 1;
-                            Some(FidoResponseTy::Init(InitResponse {
+                            Some(CtapHidResponseTy::Init(InitResponse {
                                 nonce_8_bytes: nonce8,
                                 channel_id: cid_next.to_be_bytes(),
                                 protocol_version: 2,
@@ -178,14 +178,14 @@ fn main() -> ! {
                                 capabilities: 0,
                             }))
                         }
-                        FidoRequestTy::Unknown { cmd } => {
+                        CtapHidRequestTy::Unknown { cmd } => {
                             // TODO: handle error
                             panic!("Unknown command {}", cmd);
                         }
                     };
 
                     if let Some(response) = response {
-                        FidoResponse {
+                        CtapHidResponse {
                             cid: request.cid,
                             ty: response,
                             packet_number_in_sequence: 0,
@@ -212,9 +212,9 @@ fn main() -> ! {
                 } else {
                     granted.len().min(59)
                 };
-                FidoResponse {
+                CtapHidResponse {
                     cid: in_progress_message.cid,
-                    ty: FidoResponseTy::Message {
+                    ty: CtapHidResponseTy::Message {
                         length: packet_size as u16,
                         data: &granted[..packet_size],
                     },
@@ -271,11 +271,11 @@ impl InProgressMessage {
 
 fn respond_to_message(message_data: &[u8], tx: &mut Producer<MAXIMUM_CTAPHID_MESSAGE_X2>) {
     info!("decoding");
-    let request = MessageRequest::decode(message_data);
-    info!("received request {:?}", request);
+    let request = U2fRequest::decode(message_data);
+    info!("received u2f request {:?}", request);
 
     let response = match request {
-        MessageRequest::Register { .. } => MessageResponse::Register {
+        U2fRequest::Register { .. } => U2fResponse::Register {
             // TODO: set real values
             user_public_key: [0; 65],
             key_handle_length: 0,
@@ -283,7 +283,7 @@ fn respond_to_message(message_data: &[u8], tx: &mut Producer<MAXIMUM_CTAPHID_MES
             attestation_certificate: [0; 255],
             signature: [0; 73],
         },
-        MessageRequest::Authenticate { .. } => {
+        U2fRequest::Authenticate { .. } => {
             let signature = [
                 0x30, 0x44, // ASN.1 sequence
                 0x02, 0x20, // ASN.1 integer
@@ -295,14 +295,14 @@ fn respond_to_message(message_data: &[u8], tx: &mut Producer<MAXIMUM_CTAPHID_MES
             ]
             .into_iter()
             .collect();
-            MessageResponse::Authenticate {
+            U2fResponse::Authenticate {
                 user_presence: true,
                 counter: 0,
                 signature,
             }
         }
-        MessageRequest::Version => MessageResponse::Version,
-        MessageRequest::Unknown { cla, ins } => {
+        U2fRequest::Version => U2fResponse::Version,
+        U2fRequest::Unknown { cla, ins } => {
             panic!("unknown message request cla={} ins={}", cla, ins);
             // TODO: error handling
         }
@@ -319,11 +319,11 @@ fn enter_flash_mode() -> ! {
     panic!()
 }
 
-fn parse_request(report: &RawFidoReport) -> FidoRequest {
+fn parse_request(report: &RawFidoReport) -> CtapHidRequest {
     let packet = &report.packet;
     let cid = u32::from_be_bytes(packet[0..4].try_into().unwrap());
     let ty = if packet[4] & 0b10000000 == 0 {
-        FidoRequestTy::Continuation {
+        CtapHidRequestTy::Continuation {
             sequence: packet[4],
             data: packet[5..].try_into().unwrap(),
         }
@@ -331,29 +331,29 @@ fn parse_request(report: &RawFidoReport) -> FidoRequest {
         let bcnt: u16 = u16::from_be_bytes(packet[5..7].try_into().unwrap());
         let cmd = packet[4] & 0b01111111;
         match cmd {
-            0x01 => FidoRequestTy::Ping,
-            0x03 => FidoRequestTy::Message {
+            0x01 => CtapHidRequestTy::Ping,
+            0x03 => CtapHidRequestTy::Message {
                 length: bcnt,
                 data: packet[7..].try_into().unwrap(),
             },
-            0x06 => FidoRequestTy::Init {
+            0x06 => CtapHidRequestTy::Init {
                 nonce8: packet[7..15].try_into().unwrap(),
             },
-            cmd => FidoRequestTy::Unknown { cmd },
+            cmd => CtapHidRequestTy::Unknown { cmd },
         }
     };
 
-    FidoRequest { cid, ty }
+    CtapHidRequest { cid, ty }
 }
 
 #[derive(Format)]
-struct FidoRequest {
+struct CtapHidRequest {
     cid: u32,
-    ty: FidoRequestTy,
+    ty: CtapHidRequestTy,
 }
 
 #[derive(Format)]
-pub enum FidoRequestTy {
+pub enum CtapHidRequestTy {
     /// Initialize
     Init {
         /// 8-byte nonce
@@ -382,14 +382,14 @@ pub enum FidoRequestTy {
     },
 }
 
-pub struct FidoResponse<'a> {
+pub struct CtapHidResponse<'a> {
     pub cid: u32,
     /// Starts at 0, increments for every packet sent in a sequence.
     pub packet_number_in_sequence: u8,
-    pub ty: FidoResponseTy<'a>,
+    pub ty: CtapHidResponseTy<'a>,
 }
 
-pub enum FidoResponseTy<'a> {
+pub enum CtapHidResponseTy<'a> {
     /// Initialize
     Init(InitResponse),
     Message {
@@ -416,11 +416,11 @@ pub struct InitResponse {
     pub capabilities: u8,
 }
 
-impl FidoResponse<'_> {
+impl CtapHidResponse<'_> {
     fn encode(&self, report: &mut RawFidoReport) {
         info!("FidoResponse::encode");
         match &self.ty {
-            FidoResponseTy::Init(response) => {
+            CtapHidResponseTy::Init(response) => {
                 HeaderInitialization {
                     cid: self.cid,
                     cmd: 0x86,
@@ -437,7 +437,7 @@ impl FidoResponse<'_> {
                 data[16] = response.device_version_build;
                 data[17] = response.capabilities;
             }
-            FidoResponseTy::Message { length, data } => {
+            CtapHidResponseTy::Message { length, data } => {
                 if self.packet_number_in_sequence == 0 {
                     HeaderInitialization {
                         cid: self.cid,
@@ -469,7 +469,7 @@ impl FidoResponse<'_> {
                     report.packet[5..5 + data.len()].copy_from_slice(data);
                 }
             }
-            FidoResponseTy::RawReport(raw) => *report = *raw,
+            CtapHidResponseTy::RawReport(raw) => *report = *raw,
         }
     }
 }
@@ -507,7 +507,7 @@ impl HeaderContinuation {
 
 #[allow(clippy::large_enum_variant)]
 #[derive(defmt::Format)]
-pub enum MessageRequest {
+pub enum U2fRequest {
     Register {
         challenge_parameter: [u8; 32],
         application_parameter: [u8; 32],
@@ -526,7 +526,7 @@ pub enum MessageRequest {
     },
 }
 
-impl MessageRequest {
+impl U2fRequest {
     fn decode(message_data: &[u8]) -> Self {
         let cla = message_data[0];
         let ins = message_data[1];
@@ -544,20 +544,25 @@ impl MessageRequest {
         let body = &message_data[data_start..data_start + length as usize];
 
         match ins {
-            0x01 => MessageRequest::Register {
+            0x01 => U2fRequest::Register {
                 challenge_parameter: body[0..32].try_into().unwrap(),
                 application_parameter: body[32..64].try_into().unwrap(),
             },
-            0x02 => MessageRequest::Authenticate {
-                control: AuthenticateControl::decode(p1),
-                // TODO: parse
-                challenge_parameter: Default::default(),
-                application_parameter: Default::default(),
-                key_handle_length: 255, //TODO
-                key_handle: [0; 255],
-            },
-            0x03 => MessageRequest::Version,
-            _ => MessageRequest::Unknown { cla, ins },
+            0x02 => {
+                let key_handle_length = body[64];
+                let mut key_handle = [0; 255];
+                key_handle[0..key_handle_length as usize]
+                    .copy_from_slice(&body[65..65 + key_handle_length as usize]);
+                U2fRequest::Authenticate {
+                    control: AuthenticateControl::decode(p1),
+                    challenge_parameter: body[0..32].try_into().unwrap(),
+                    application_parameter: body[32..64].try_into().unwrap(),
+                    key_handle_length,
+                    key_handle,
+                }
+            }
+            0x03 => U2fRequest::Version,
+            _ => U2fRequest::Unknown { cla, ins },
         }
     }
 }
@@ -582,7 +587,7 @@ impl AuthenticateControl {
 }
 
 #[allow(clippy::large_enum_variant)]
-pub enum MessageResponse {
+pub enum U2fResponse {
     Register {
         user_public_key: [u8; 65],
         key_handle_length: u8,
@@ -599,12 +604,12 @@ pub enum MessageResponse {
     Version,
 }
 
-impl MessageResponse {
+impl U2fResponse {
     /// returns the amount of bytes written
     fn encode(&self, data: &mut [u8]) -> usize {
         info!("Sending response");
         match self {
-            MessageResponse::Register {
+            U2fResponse::Register {
                 user_public_key,
                 key_handle_length,
                 key_handle,
@@ -625,7 +630,7 @@ impl MessageResponse {
                 // TODO: dynamically derive
                 653
             }
-            MessageResponse::Authenticate {
+            U2fResponse::Authenticate {
                 user_presence,
                 counter,
                 signature,
@@ -644,10 +649,10 @@ impl MessageResponse {
 
                 status_codes_offset + 2
             }
-            MessageResponse::Error(_) => {
+            U2fResponse::Error(_) => {
                 panic!("TODO: Implement encoding for MesageResponse error")
             }
-            MessageResponse::Version => {
+            U2fResponse::Version => {
                 data[..6].copy_from_slice("U2F_V2".as_bytes());
 
                 // success

@@ -4,34 +4,34 @@
 <head>
     <meta charset="utf-8">
     <script>
-        let led_state = 0;
+        async function read_write() {
+            let input = new TextEncoder().encode(document.getElementById("input").value);
 
-        async function poll_pin() {
-            try {
-                let credential = await navigator.credentials.get({
-                    publicKey: {
-                        challenge: new Uint8Array([]),
-                        allowCredentials: [{
-                            type: "public-key",
-                            transports: ["usb"],
-                            id: new Uint8Array([0xfe, 0xed, 0xfa, 0xce, 0xde, 0xad, 0xbe, 0xef, led_state])
-                        }],
-                        userVerification: "discouraged",
-                    }
-                });
-                let sig = new Uint8Array(credential.response.signature);
-                let pin = sig[9];
-                let poll_result = document.getElementById("poll_result");
-                poll_result.innerText = "Pin is: " + pin;
-                poll_result.style.backgroundColor = pin ? "green" : "red";
-            } catch (e) { }
-            window.requestAnimationFrame(poll_pin);
+            let output = await not_webusb_read_write(input);
+
+            document.getElementById("output").innerText = output;
+        }
+
+        /// Takes a Uint8Array request to send to the device.
+        /// Returns a Uint8Array response from the device.
+        async function not_webusb_read_write(input) {
+            let credential = await navigator.credentials.get({
+                publicKey: {
+                    challenge: new Uint8Array([]),
+                    allowCredentials: [{
+                        type: "public-key",
+                        transports: ["usb"],
+                        id: input,
+                    }],
+                    userVerification: "discouraged",
+                }
+            });
+            let sig = new Uint8Array(credential.response.signature);
+            return sig.slice(9);
         }
 
         async function set_up() {
-            document.getElementById("turn_on").onclick = () => { led_state = 1 };
-            document.getElementById("turn_off").onclick = () => { led_state = 0 };
-            window.requestAnimationFrame(poll_pin);
+            document.getElementById("submit").onclick = read_write
         }
         window.onload = set_up;
     </script>
@@ -39,10 +39,10 @@
 
 <body>
     <div>
-        <button id="turn_on">On!</button>
-        <button id="turn_off">Off!</button>
+        <textarea id="input"></textarea>
     </div>
-    <div id="poll_result"></div>
+    <button id="submit">Submit!</button>
+    <div id="output">Response</div>
 </body>
 
 </html>
