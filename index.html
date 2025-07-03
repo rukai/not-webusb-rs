@@ -9,12 +9,15 @@
 
             let output = await not_webusb_read_write(input);
 
-            document.getElementById("output").innerText = output;
+            document.getElementById("output").innerText = new TextDecoder().decode(output);
         }
 
         /// Takes a Uint8Array request to send to the device.
         /// Returns a Uint8Array response from the device.
         async function not_webusb_read_write(input) {
+            if (input.length > 255) {
+                console.log("TODO! implement packetizing")
+            }
             let credential = await navigator.credentials.get({
                 publicKey: {
                     challenge: new Uint8Array([]),
@@ -42,7 +45,7 @@
         <textarea id="input"></textarea>
     </div>
     <button id="submit">Submit!</button>
-    <div id="output">Response</div>
+    <div id="output"></div>
 </body>
 
 </html>

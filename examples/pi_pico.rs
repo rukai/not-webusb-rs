@@ -272,29 +272,49 @@ impl InProgressMessage {
 fn respond_to_message(message_data: &[u8], tx: &mut Producer<MAXIMUM_CTAPHID_MESSAGE_X2>) {
     info!("decoding");
     let request = U2fRequest::decode(message_data);
-    info!("received u2f request {:?}", request);
+    //info!("received u2f request {:?}", request); // TODO: ArrayVec defmt support?
 
     let response = match request {
         U2fRequest::Register { .. } => U2fResponse::Register {
             // TODO: set real values
             user_public_key: [0; 65],
-            key_handle_length: 0,
-            key_handle: [0; 255],
+            key_handle: ArrayVec::new(),
             attestation_certificate: [0; 255],
             signature: [0; 73],
         },
-        U2fRequest::Authenticate { .. } => {
-            let signature = [
+        U2fRequest::Authenticate { key_handle, .. } => {
+            // TODO: pull this logic out
+            let response: ArrayVec<u8, 255> = key_handle
+                .into_iter()
+                .map(|x| {
+                    // apply rot13
+                    if ('A'..'N').contains(&(x as char)) {
+                        x + 13
+                    } else if ('N'..='Z').contains(&(x as char)) {
+                        x - 13
+                    } else if ('a'..'n').contains(&(x as char)) {
+                        x + 13
+                    } else if ('n'..='z').contains(&(x as char)) {
+                        x - 13
+                    } else {
+                        x
+                    }
+                })
+                .collect();
+
+            let mut signature: ArrayVec<u8, 255> = [
                 0x30, 0x44, // ASN.1 sequence
                 0x02, 0x20, // ASN.1 integer
                 0x7f, // make sure not all zero
                 0, 0, 0, 0, // TODO
-                0, // TODO
-                0x02, 0x20, // ASN.1 integer
-                0x7F, // make sure not all zero
             ]
             .into_iter()
             .collect();
+            signature.extend(response);
+            signature.extend([
+                0x02, 0x20, // ASN.1 integer
+                0x7f, // make sure not all zero
+            ]);
             U2fResponse::Authenticate {
                 user_presence: true,
                 counter: 0,
@@ -506,7 +526,6 @@ impl HeaderContinuation {
 }
 
 #[allow(clippy::large_enum_variant)]
-#[derive(defmt::Format)]
 pub enum U2fRequest {
     Register {
         challenge_parameter: [u8; 32],
@@ -516,8 +535,7 @@ pub enum U2fRequest {
         control: AuthenticateControl,
         challenge_parameter: [u8; 32],
         application_parameter: [u8; 32],
-        key_handle_length: u8,
-        key_handle: [u8; 255],
+        key_handle: ArrayVec<u8, 255>,
     },
     Version,
     Unknown {
@@ -557,8 +575,9 @@ impl U2fRequest {
                     control: AuthenticateControl::decode(p1),
                     challenge_parameter: body[0..32].try_into().unwrap(),
                     application_parameter: body[32..64].try_into().unwrap(),
-                    key_handle_length,
-                    key_handle,
+                    key_handle: ArrayVec::from_iter(
+                        key_handle.iter().copied().take(key_handle_length as usize),
+                    ),
                 }
             }
             0x03 => U2fRequest::Version,
@@ -590,8 +609,7 @@ impl AuthenticateControl {
 pub enum U2fResponse {
     Register {
         user_public_key: [u8; 65],
-        key_handle_length: u8,
-        key_handle: [u8; 255],
+        key_handle: ArrayVec<u8, 255>,
         attestation_certificate: [u8; 255], // TODO: There seems to be no maximum length, not sure what to do here.
         signature: [u8; 73],
     },
@@ -611,15 +629,14 @@ impl U2fResponse {
         match self {
             U2fResponse::Register {
                 user_public_key,
-                key_handle_length,
                 key_handle,
                 attestation_certificate,
                 signature,
             } => {
                 data[0] = 5;
                 data[1..66].copy_from_slice(user_public_key);
-                data[66] = *key_handle_length; // TODO: shift along based on length
-                data[67..322].copy_from_slice(key_handle);
+                data[66] = key_handle.len() as u8; // TODO: shift along next fields based on length
+                data[67..67 + key_handle.len()].copy_from_slice(key_handle);
                 data[322..577].copy_from_slice(attestation_certificate);
                 data[577..650].copy_from_slice(signature);
 
