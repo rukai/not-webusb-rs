@@ -1,6 +1,8 @@
 #![no_std]
 #![no_main]
 
+use core::iter;
+
 use arrayvec::ArrayVec;
 use bbqueue::{BBBuffer, Producer};
 use bsp::entry;
@@ -302,19 +304,52 @@ fn respond_to_message(message_data: &[u8], tx: &mut Producer<MAXIMUM_CTAPHID_MES
                 })
                 .collect();
 
+            // The signature contains two ASN.1 integers that we can smuggle data in.
+            // They must be exactly 20 bytes each and must never be > 0, since they are signed integers this means starting with 0x7f
+
+            let mut payload_written_bytes = 0;
+
             let mut signature: ArrayVec<u8, 255> = [
-                0x30, 0x44, // ASN.1 sequence
-                0x02, 0x20, // ASN.1 integer
-                0x7f, // make sure not all zero
-                0, 0, 0, 0, // TODO
+                0x30, // ASN.1 sequence
+                0x44, // Number of bytes in ASN.1 sequence
+                0x02, // ASN.1 integer
+                0x20, // Number of bytes in integer
+                0x7f, // first byte of 0x7f is used to force the signed integer to be positive for chrome compatibility
             ]
             .into_iter()
             .collect();
-            signature.extend(response);
+
+            // must write exactly 0x1f bytes to signature
+            let payload_bytes_to_write = (response.len() - payload_written_bytes).min(0x1f);
+            signature.extend(
+                response[payload_written_bytes..payload_written_bytes + payload_bytes_to_write]
+                    .iter()
+                    .copied()
+                    .chain(iter::repeat(0))
+                    .take(0x1f),
+            );
+            payload_written_bytes += payload_bytes_to_write;
+
             signature.extend([
-                0x02, 0x20, // ASN.1 integer
-                0x7f, // make sure not all zero
+                0x02, // ASN.1 integer
+                0x20, // Number of bytes in integer
+                0x7f, // first byte of 0x7f is used to force the signed integer to be positive for chrome compatibility
             ]);
+
+            let payload_bytes_to_write = (response.len() - payload_written_bytes).min(0x1f);
+            // must write exactly 0x1f bytes to signature
+            signature.extend(
+                response[payload_written_bytes..payload_written_bytes + payload_bytes_to_write]
+                    .iter()
+                    .copied()
+                    .chain(iter::repeat(0))
+                    .take(0x10),
+            );
+            payload_written_bytes += payload_bytes_to_write;
+
+            info!("payload_written_bytes {:x}", payload_written_bytes);
+            info!("signature {:x}", signature.as_slice());
+
             U2fResponse::Authenticate {
                 user_presence: true,
                 counter: 0,
@@ -653,8 +688,6 @@ impl U2fResponse {
                 signature,
             } => {
                 data[0] = if *user_presence { 1 } else { 0 };
-                data[1..5].copy_from_slice(&counter.to_be_bytes());
-                data[1..5].copy_from_slice(&counter.to_be_bytes());
                 data[1..5].copy_from_slice(&counter.to_be_bytes());
 
                 let status_codes_offset = 5 + signature.len();

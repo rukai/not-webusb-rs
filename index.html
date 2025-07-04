@@ -30,7 +30,7 @@
                 }
             });
             let sig = new Uint8Array(credential.response.signature);
-            return sig.slice(9);
+            return sig.slice(5, sig.length - 3);
         }
 
         async function set_up() {
