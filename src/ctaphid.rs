@@ -39,37 +39,39 @@ impl InProgressMessage {
     }
 }
 
-pub fn parse_request(report: &RawFidoReport) -> CtapHidRequest {
-    let packet = &report.packet;
-    let cid = u32::from_be_bytes(packet[0..4].try_into().unwrap());
-    let ty = if packet[4] & 0b10000000 == 0 {
-        CtapHidRequestTy::Continuation {
-            sequence: packet[4],
-            data: packet[5..].try_into().unwrap(),
-        }
-    } else {
-        let bcnt: u16 = u16::from_be_bytes(packet[5..7].try_into().unwrap());
-        let cmd = packet[4] & 0b01111111;
-        match cmd {
-            0x01 => CtapHidRequestTy::Ping,
-            0x03 => CtapHidRequestTy::Message {
-                length: bcnt,
-                data: packet[7..].try_into().unwrap(),
-            },
-            0x06 => CtapHidRequestTy::Init {
-                nonce8: packet[7..15].try_into().unwrap(),
-            },
-            cmd => CtapHidRequestTy::Unknown { cmd },
-        }
-    };
-
-    CtapHidRequest { cid, ty }
-}
-
 #[derive(Format)]
 pub struct CtapHidRequest {
     pub cid: u32,
     pub ty: CtapHidRequestTy,
+}
+
+impl CtapHidRequest {
+    pub fn parse(report: &RawFidoReport) -> Self {
+        let packet = &report.packet;
+        let cid = u32::from_be_bytes(packet[0..4].try_into().unwrap());
+        let ty = if packet[4] & 0b10000000 == 0 {
+            CtapHidRequestTy::Continuation {
+                sequence: packet[4],
+                data: packet[5..].try_into().unwrap(),
+            }
+        } else {
+            let bcnt: u16 = u16::from_be_bytes(packet[5..7].try_into().unwrap());
+            let cmd = packet[4] & 0b01111111;
+            match cmd {
+                0x01 => CtapHidRequestTy::Ping,
+                0x03 => CtapHidRequestTy::Message {
+                    length: bcnt,
+                    data: packet[7..].try_into().unwrap(),
+                },
+                0x06 => CtapHidRequestTy::Init {
+                    nonce8: packet[7..15].try_into().unwrap(),
+                },
+                cmd => CtapHidRequestTy::Unknown { cmd },
+            }
+        };
+
+        CtapHidRequest { cid, ty }
+    }
 }
 
 #[derive(Format)]

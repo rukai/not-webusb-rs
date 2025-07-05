@@ -12,8 +12,8 @@ use usbd_human_interface_device::device::fido::{RawFido, RawFidoReport};
 use usbd_human_interface_device::prelude::*;
 
 use crate::ctaphid::{
-    ContinuationState, CtapHidRequestTy, CtapHidResponse, CtapHidResponseTy, InProgressMessage,
-    InitResponse, parse_request,
+    ContinuationState, CtapHidRequest, CtapHidRequestTy, CtapHidResponse, CtapHidResponseTy,
+    InProgressMessage, InitResponse,
 };
 
 // as per FIDO CTAP spec maximum payload size is 7609 bytes
@@ -58,7 +58,7 @@ impl<'a, UsbBusT: UsbBus> NotWebUsb<'a, UsbBusT> {
                     panic!("Failed to read fido report: {:?}", e)
                 }
                 Ok(report) => {
-                    let request = parse_request(&report);
+                    let request = CtapHidRequest::parse(&report);
                     info!("received ctaphid request {:?}", request);
                     let response = match request.ty {
                         CtapHidRequestTy::Ping => Some(CtapHidResponseTy::RawReport(report)),
