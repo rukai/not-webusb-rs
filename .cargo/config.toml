@@ -10,4 +10,4 @@ rustflags = [
 runner = "probe-rs run --chip RP2040 --protocol swd"
 
 [env]
-DEFMT_LOG = "debug"
+DEFMT_LOG = "info"

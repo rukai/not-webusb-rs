@@ -147,10 +147,10 @@ fn main() -> ! {
 
                             in_progress_message_option = Some(InProgressMessage {
                                 cid: request.cid,
-                                buffer: [0; MAXIMUM_CTAPHID_MESSAGE],
-                                current_payload_size: length as usize,
-                                current_payload_bytes_written: 0,
-                                packet_number_in_sequence: 0,
+                                request_buffer: [0; MAXIMUM_CTAPHID_MESSAGE],
+                                current_request_payload_size: length as usize,
+                                current_request_payload_bytes_written: 0,
+                                response_packet_number_in_sequence: 0,
                             });
                             if let Some(in_progress_message) = &mut in_progress_message_option {
                                 in_progress_message.write_data(&data, &mut tx);
@@ -193,6 +193,7 @@ fn main() -> ! {
                             packet_number_in_sequence: 0,
                         }
                         .encode(&mut raw_response);
+                        info!("sending direct raw response {}", raw_response.packet);
                         match fido.device().write_report(&raw_response) {
                             Err(UsbHidError::WouldBlock) => {}
                             Err(UsbHidError::Duplicate) => {}
@@ -208,22 +209,26 @@ fn main() -> ! {
 
         if let Some(in_progress_message) = &mut in_progress_message_option {
             if let Ok(granted) = rx.read() {
+                info!("initial granted.len() {}", granted.len());
                 info!("reading in_progress_message");
-                let packet_size = if in_progress_message.packet_number_in_sequence == 0 {
+                let packet_size = if in_progress_message.response_packet_number_in_sequence == 0 {
                     granted.len().min(57)
                 } else {
                     granted.len().min(59)
                 };
+                info!("packet_size {}", packet_size);
                 CtapHidResponse {
                     cid: in_progress_message.cid,
                     ty: CtapHidResponseTy::Message {
                         length: packet_size as u16,
                         data: &granted[..packet_size],
                     },
-                    packet_number_in_sequence: in_progress_message.packet_number_in_sequence,
+                    packet_number_in_sequence: in_progress_message
+                        .response_packet_number_in_sequence,
                 }
                 .encode(&mut raw_response);
-                in_progress_message.packet_number_in_sequence += 1;
+                info!("sending prepared raw response {}", raw_response.packet);
+                in_progress_message.response_packet_number_in_sequence += 1;
 
                 if granted.len() == packet_size {
                     // finished!!!
@@ -232,6 +237,9 @@ fn main() -> ! {
                 }
 
                 granted.release(packet_size);
+                if let Ok(granted) = rx.read() {
+                    info!("final granted.len() {}", granted.len());
+                }
 
                 match fido.device().write_report(&raw_response) {
                     Err(UsbHidError::WouldBlock) => {}
@@ -248,25 +256,28 @@ fn main() -> ! {
 
 struct InProgressMessage {
     cid: u32,
-    buffer: [u8; MAXIMUM_CTAPHID_MESSAGE],
-    current_payload_size: usize,
-    current_payload_bytes_written: usize,
+    request_buffer: [u8; MAXIMUM_CTAPHID_MESSAGE],
+    current_request_payload_size: usize,
+    current_request_payload_bytes_written: usize,
     /// Starts at 0, increments for every packet sent in a sequence.
-    packet_number_in_sequence: u8,
+    response_packet_number_in_sequence: u8,
 }
 
 impl InProgressMessage {
     /// Returns true if the request has finished parsing and the response was sent
     fn write_data(&mut self, data: &[u8], tx: &mut Producer<MAXIMUM_CTAPHID_MESSAGE_X2>) {
         info!("write_data");
-        self.buffer
-            [self.current_payload_bytes_written..self.current_payload_bytes_written + data.len()]
+        self.request_buffer[self.current_request_payload_bytes_written
+            ..self.current_request_payload_bytes_written + data.len()]
             .copy_from_slice(data);
 
         // if we have completely received the request, respond to it.
-        self.current_payload_bytes_written += data.len();
-        if self.current_payload_bytes_written >= self.current_payload_size {
-            respond_to_message(&self.buffer[..self.current_payload_size], tx);
+        self.current_request_payload_bytes_written += data.len();
+        if self.current_request_payload_bytes_written >= self.current_request_payload_size {
+            respond_to_message(
+                &self.request_buffer[..self.current_request_payload_size],
+                tx,
+            );
         }
     }
 }
@@ -274,7 +285,33 @@ impl InProgressMessage {
 fn respond_to_message(message_data: &[u8], tx: &mut Producer<MAXIMUM_CTAPHID_MESSAGE_X2>) {
     info!("decoding");
     let request = U2fRequest::decode(message_data);
+
     //info!("received u2f request {:?}", request); // TODO: ArrayVec defmt support?
+    match &request {
+        U2fRequest::Register {
+            challenge_parameter,
+            application_parameter,
+        } => info!(
+            "received u2f request: register challenge_parameter={} application_parameter={}",
+            challenge_parameter, application_parameter
+        ),
+        U2fRequest::Authenticate {
+            control,
+            challenge_parameter,
+            application_parameter,
+            key_handle,
+        } => info!(
+            "received u2f request: authenticate control={} challenge_parameter={} application_parameter={} key_handle={}",
+            control,
+            challenge_parameter,
+            application_parameter,
+            key_handle.as_slice()
+        ),
+        U2fRequest::Version => info!("received u2f request: version"),
+        U2fRequest::Unknown { cla, ins } => {
+            info!("received u2f request: unknown cla={} ins={}", cla, ins)
+        }
+    }
 
     let response = match request {
         U2fRequest::Register { .. } => U2fResponse::Register {
@@ -343,7 +380,7 @@ fn respond_to_message(message_data: &[u8], tx: &mut Producer<MAXIMUM_CTAPHID_MES
                     .iter()
                     .copied()
                     .chain(iter::repeat(0))
-                    .take(0x10),
+                    .take(0xb), // TODO: increasing this beyond 0xB makes the whole thing explode
             );
             payload_written_bytes += payload_bytes_to_write;
 
@@ -365,6 +402,7 @@ fn respond_to_message(message_data: &[u8], tx: &mut Producer<MAXIMUM_CTAPHID_MES
 
     let mut granted = tx.grant_exact(MAXIMUM_CTAPHID_MESSAGE).unwrap();
     let size = response.encode(&mut granted);
+    info!("wrote {} bytes to outgoing response", size);
     granted.commit(size);
 }
 
@@ -473,10 +511,13 @@ pub struct InitResponse {
 
 impl CtapHidResponse<'_> {
     fn encode(&self, report: &mut RawFidoReport) {
+        // Not technically needed but makes it easier to debug outgoing packets.
+        report.packet.fill(0);
+
         info!("FidoResponse::encode");
         match &self.ty {
             CtapHidResponseTy::Init(response) => {
-                HeaderInitialization {
+                CtapHeaderInitialization {
                     cid: self.cid,
                     cmd: 0x86,
                     bcnt: 17,
@@ -494,7 +535,7 @@ impl CtapHidResponse<'_> {
             }
             CtapHidResponseTy::Message { length, data } => {
                 if self.packet_number_in_sequence == 0 {
-                    HeaderInitialization {
+                    CtapHeaderInitialization {
                         cid: self.cid,
                         cmd: 0x83,
                         bcnt: *length,
@@ -509,7 +550,7 @@ impl CtapHidResponse<'_> {
                     }
                     report.packet[7..7 + data.len()].copy_from_slice(data);
                 } else {
-                    HeaderContinuation {
+                    CtapHeaderContinuation {
                         cid: self.cid,
                         seq: self.packet_number_in_sequence,
                     }
@@ -529,7 +570,7 @@ impl CtapHidResponse<'_> {
     }
 }
 
-pub struct HeaderInitialization {
+pub struct CtapHeaderInitialization {
     /// The channel identifier
     pub cid: u32,
     /// The command identifier
@@ -538,7 +579,7 @@ pub struct HeaderInitialization {
     pub bcnt: u16,
 }
 
-impl HeaderInitialization {
+impl CtapHeaderInitialization {
     fn encode(self, report: &mut RawFidoReport) {
         report.packet[0..4].copy_from_slice(&self.cid.to_be_bytes());
         report.packet[4] = self.cmd;
@@ -546,14 +587,14 @@ impl HeaderInitialization {
     }
 }
 
-pub struct HeaderContinuation {
+pub struct CtapHeaderContinuation {
     /// The channel identifier
     pub cid: u32,
     /// The packet sequence
     pub seq: u8,
 }
 
-impl HeaderContinuation {
+impl CtapHeaderContinuation {
     fn encode(self, report: &mut RawFidoReport) {
         report.packet[0..4].copy_from_slice(&self.cid.to_be_bytes());
         report.packet[4] = self.seq;
@@ -696,6 +737,7 @@ impl U2fResponse {
                 // success
                 data[status_codes_offset] = 0x90;
                 data[status_codes_offset + 1] = 0x00;
+                debug!("authenticate response raw {}", &data);
 
                 status_codes_offset + 2
             }
