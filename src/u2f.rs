@@ -111,7 +111,7 @@ pub fn respond_to_message(message_data: &[u8], tx: &mut Producer<MAXIMUM_CTAPHID
                         .iter()
                         .copied()
                         .chain(iter::repeat(0))
-                        .take(0xc), // TODO: increasing this beyond 0xB makes the whole thing explode
+                        .take(0x1f), // TODO: increasing this beyond 0xB makes the whole thing explode
                 );
                 payload_written_bytes += payload_bytes_to_write;
 

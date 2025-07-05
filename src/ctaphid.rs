@@ -163,7 +163,6 @@ impl CtapHidResponse<'_> {
             }
             CtapHidResponseTy::Message { length, data } => match self.continuation_state {
                 ContinuationState::Initial => {
-                    info!("data!!! {}", data);
                     CtapHeaderInitialization {
                         cid: self.cid,
                         cmd: 0x83,

@@ -137,20 +137,21 @@ impl<'a, UsbBusT: UsbBus> NotWebUsb<'a, UsbBusT> {
         if let Some(in_progress_message) = &mut self.in_progress_message_option {
             match self.rx.read() {
                 Ok(granted) => {
-                    info!("initial granted.len() {}", granted.len());
+                    let full_u2f_size = granted.len();
+                    info!("full_u2f_size {}", full_u2f_size);
                     info!("reading in_progress_message");
                     let packet_size = if let ContinuationState::Initial =
                         in_progress_message.response_continuation_state
                     {
-                        granted.len().min(57)
+                        full_u2f_size.min(57)
                     } else {
-                        granted.len().min(59)
+                        full_u2f_size.min(59)
                     };
                     info!("packet_size {}", packet_size);
                     CtapHidResponse {
                         cid: in_progress_message.cid,
                         ty: CtapHidResponseTy::Message {
-                            length: packet_size as u16,
+                            length: full_u2f_size as u16,
                             data: &granted[..packet_size],
                         },
                         continuation_state: in_progress_message.response_continuation_state,
@@ -172,7 +173,7 @@ impl<'a, UsbBusT: UsbBus> NotWebUsb<'a, UsbBusT> {
                         }
                     }
 
-                    if granted.len() == packet_size {
+                    if full_u2f_size == packet_size {
                         // finished!!!
                         info!("finished writing response");
                         self.in_progress_message_option = None;
