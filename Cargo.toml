@@ -29,7 +29,7 @@ cortex-m-rt = "0.7.5"
 embedded-hal = "1.0.0"
 pio = "0.2.1"
 rp-pico = "0.9.0"
-bbqueue = { version = "0.5.1", features = ["thumbv6"] }
+bbqueue = { version = "0.5.1", features = ["thumbv6", "defmt_0_3"] }
 rp2040-hal = { version = "0.10.0", features = ["critical-section-impl"] }
 
 # defmt

@@ -150,7 +150,7 @@ fn main() -> ! {
                                 request_buffer: [0; MAXIMUM_CTAPHID_MESSAGE],
                                 current_request_payload_size: length as usize,
                                 current_request_payload_bytes_written: 0,
-                                response_packet_number_in_sequence: 0,
+                                response_continuation_state: ContinuationState::Initial,
                             });
                             if let Some(in_progress_message) = &mut in_progress_message_option {
                                 in_progress_message.write_data(&data, &mut tx);
@@ -190,7 +190,7 @@ fn main() -> ! {
                         CtapHidResponse {
                             cid: request.cid,
                             ty: response,
-                            packet_number_in_sequence: 0,
+                            continuation_state: ContinuationState::Initial,
                         }
                         .encode(&mut raw_response);
                         info!("sending direct raw response {}", raw_response.packet);
@@ -208,47 +208,59 @@ fn main() -> ! {
         }
 
         if let Some(in_progress_message) = &mut in_progress_message_option {
-            if let Ok(granted) = rx.read() {
-                info!("initial granted.len() {}", granted.len());
-                info!("reading in_progress_message");
-                let packet_size = if in_progress_message.response_packet_number_in_sequence == 0 {
-                    granted.len().min(57)
-                } else {
-                    granted.len().min(59)
-                };
-                info!("packet_size {}", packet_size);
-                CtapHidResponse {
-                    cid: in_progress_message.cid,
-                    ty: CtapHidResponseTy::Message {
-                        length: packet_size as u16,
-                        data: &granted[..packet_size],
-                    },
-                    packet_number_in_sequence: in_progress_message
-                        .response_packet_number_in_sequence,
-                }
-                .encode(&mut raw_response);
-                info!("sending prepared raw response {}", raw_response.packet);
-                in_progress_message.response_packet_number_in_sequence += 1;
+            match rx.read() {
+                Ok(granted) => {
+                    info!("initial granted.len() {}", granted.len());
+                    info!("reading in_progress_message");
+                    let packet_size = if let ContinuationState::Initial =
+                        in_progress_message.response_continuation_state
+                    {
+                        granted.len().min(57)
+                    } else {
+                        granted.len().min(59)
+                    };
+                    info!("packet_size {}", packet_size);
+                    CtapHidResponse {
+                        cid: in_progress_message.cid,
+                        ty: CtapHidResponseTy::Message {
+                            length: packet_size as u16,
+                            data: &granted[..packet_size],
+                        },
+                        continuation_state: in_progress_message.response_continuation_state,
+                    }
+                    .encode(&mut raw_response);
+                    info!("sending prepared raw response {}", raw_response.packet);
 
-                if granted.len() == packet_size {
-                    // finished!!!
-                    info!("finished writing response");
-                    in_progress_message_option = None;
-                }
+                    // step sequence state
+                    match &mut in_progress_message.response_continuation_state {
+                        ContinuationState::Continuation { sequence } => {
+                            *sequence += 1;
+                        }
+                        ContinuationState::Initial => {
+                            in_progress_message.response_continuation_state =
+                                ContinuationState::Continuation { sequence: 0 }
+                        }
+                    }
 
-                granted.release(packet_size);
-                if let Ok(granted) = rx.read() {
-                    info!("final granted.len() {}", granted.len());
-                }
-
-                match fido.device().write_report(&raw_response) {
-                    Err(UsbHidError::WouldBlock) => {}
-                    Err(UsbHidError::Duplicate) => {}
-                    Ok(_) => {}
-                    Err(e) => {
-                        panic!("Failed to write fido report: {:?}", e)
+                    if granted.len() == packet_size {
+                        // finished!!!
+                        info!("finished writing response");
+                        in_progress_message_option = None;
+                    }
+                    granted.release(packet_size);
+                    match fido.device().write_report(&raw_response) {
+                        Err(UsbHidError::WouldBlock) => {}
+                        Err(UsbHidError::Duplicate) => {}
+                        Ok(_) => {}
+                        Err(e) => {
+                            panic!("Failed to write fido report: {:?}", e)
+                        }
                     }
                 }
+                Err(bbqueue::Error::InsufficientSize) => {
+                    // This is expected when there are no bytes to read.
+                }
+                Err(error) => panic!("Unexpected bbq error {}", error),
             }
         }
     }
@@ -259,8 +271,13 @@ struct InProgressMessage {
     request_buffer: [u8; MAXIMUM_CTAPHID_MESSAGE],
     current_request_payload_size: usize,
     current_request_payload_bytes_written: usize,
-    /// Starts at 0, increments for every packet sent in a sequence.
-    response_packet_number_in_sequence: u8,
+    response_continuation_state: ContinuationState,
+}
+
+#[derive(Clone, Copy)]
+pub enum ContinuationState {
+    Initial,
+    Continuation { sequence: u8 },
 }
 
 impl InProgressMessage {
@@ -283,7 +300,6 @@ impl InProgressMessage {
 }
 
 fn respond_to_message(message_data: &[u8], tx: &mut Producer<MAXIMUM_CTAPHID_MESSAGE_X2>) {
-    info!("decoding");
     let request = U2fRequest::decode(message_data);
 
     //info!("received u2f request {:?}", request); // TODO: ArrayVec defmt support?
@@ -321,76 +337,85 @@ fn respond_to_message(message_data: &[u8], tx: &mut Producer<MAXIMUM_CTAPHID_MES
             attestation_certificate: [0; 255],
             signature: [0; 73],
         },
-        U2fRequest::Authenticate { key_handle, .. } => {
-            // TODO: pull this logic out
-            let response: ArrayVec<u8, 255> = key_handle
+        U2fRequest::Authenticate {
+            key_handle,
+            control,
+            ..
+        } => {
+            if let AuthenticateControl::CheckOnly = control {
+                // Actually indicates success.
+                U2fResponse::Error(MessageResponseError::ConditionsNotSatisfied)
+            } else {
+                // TODO: pull this logic out
+                let response: ArrayVec<u8, 255> = key_handle
+                    .into_iter()
+                    .map(|x| {
+                        // apply rot13
+                        if ('A'..'N').contains(&(x as char)) {
+                            x + 13
+                        } else if ('N'..='Z').contains(&(x as char)) {
+                            x - 13
+                        } else if ('a'..'n').contains(&(x as char)) {
+                            x + 13
+                        } else if ('n'..='z').contains(&(x as char)) {
+                            x - 13
+                        } else {
+                            x
+                        }
+                    })
+                    .collect();
+
+                // The signature contains two ASN.1 integers that we can smuggle data in.
+                // They must be exactly 20 bytes each and must never be > 0, since they are signed integers this means starting with 0x7f
+
+                let mut payload_written_bytes = 0;
+
+                let mut signature: ArrayVec<u8, 255> = [
+                    0x30, // ASN.1 sequence
+                    0x44, // Number of bytes in ASN.1 sequence
+                    0x02, // ASN.1 integer
+                    0x20, // Number of bytes in integer
+                    0x7f, // first byte of 0x7f is used to force the signed integer to be positive for chrome compatibility
+                ]
                 .into_iter()
-                .map(|x| {
-                    // apply rot13
-                    if ('A'..'N').contains(&(x as char)) {
-                        x + 13
-                    } else if ('N'..='Z').contains(&(x as char)) {
-                        x - 13
-                    } else if ('a'..'n').contains(&(x as char)) {
-                        x + 13
-                    } else if ('n'..='z').contains(&(x as char)) {
-                        x - 13
-                    } else {
-                        x
-                    }
-                })
                 .collect();
 
-            // The signature contains two ASN.1 integers that we can smuggle data in.
-            // They must be exactly 20 bytes each and must never be > 0, since they are signed integers this means starting with 0x7f
+                // must write exactly 0x1f bytes to signature
+                let payload_bytes_to_write = (response.len() - payload_written_bytes).min(0x1f);
+                signature.extend(
+                    response[payload_written_bytes..payload_written_bytes + payload_bytes_to_write]
+                        .iter()
+                        .copied()
+                        .chain(iter::repeat(0))
+                        .take(0x1f),
+                );
+                payload_written_bytes += payload_bytes_to_write;
 
-            let mut payload_written_bytes = 0;
+                signature.extend([
+                    0x02, // ASN.1 integer
+                    0x20, // Number of bytes in integer
+                    0x7f, // first byte of 0x7f is used to force the signed integer to be positive for chrome compatibility
+                ]);
 
-            let mut signature: ArrayVec<u8, 255> = [
-                0x30, // ASN.1 sequence
-                0x44, // Number of bytes in ASN.1 sequence
-                0x02, // ASN.1 integer
-                0x20, // Number of bytes in integer
-                0x7f, // first byte of 0x7f is used to force the signed integer to be positive for chrome compatibility
-            ]
-            .into_iter()
-            .collect();
+                let payload_bytes_to_write = (response.len() - payload_written_bytes).min(0x1f);
+                // must write exactly 0x1f bytes to signature
+                signature.extend(
+                    response[payload_written_bytes..payload_written_bytes + payload_bytes_to_write]
+                        .iter()
+                        .copied()
+                        .chain(iter::repeat(0))
+                        .take(0xc), // TODO: increasing this beyond 0xB makes the whole thing explode
+                );
+                payload_written_bytes += payload_bytes_to_write;
 
-            // must write exactly 0x1f bytes to signature
-            let payload_bytes_to_write = (response.len() - payload_written_bytes).min(0x1f);
-            signature.extend(
-                response[payload_written_bytes..payload_written_bytes + payload_bytes_to_write]
-                    .iter()
-                    .copied()
-                    .chain(iter::repeat(0))
-                    .take(0x1f),
-            );
-            payload_written_bytes += payload_bytes_to_write;
+                info!("payload_written_bytes {}", payload_written_bytes);
+                info!("signature {}", signature.as_slice());
 
-            signature.extend([
-                0x02, // ASN.1 integer
-                0x20, // Number of bytes in integer
-                0x7f, // first byte of 0x7f is used to force the signed integer to be positive for chrome compatibility
-            ]);
-
-            let payload_bytes_to_write = (response.len() - payload_written_bytes).min(0x1f);
-            // must write exactly 0x1f bytes to signature
-            signature.extend(
-                response[payload_written_bytes..payload_written_bytes + payload_bytes_to_write]
-                    .iter()
-                    .copied()
-                    .chain(iter::repeat(0))
-                    .take(0xb), // TODO: increasing this beyond 0xB makes the whole thing explode
-            );
-            payload_written_bytes += payload_bytes_to_write;
-
-            info!("payload_written_bytes {:x}", payload_written_bytes);
-            info!("signature {:x}", signature.as_slice());
-
-            U2fResponse::Authenticate {
-                user_presence: true,
-                counter: 0,
-                signature,
+                U2fResponse::Authenticate {
+                    user_presence: true,
+                    counter: 0,
+                    signature,
+                }
             }
         }
         U2fRequest::Version => U2fResponse::Version,
@@ -477,8 +502,7 @@ pub enum CtapHidRequestTy {
 
 pub struct CtapHidResponse<'a> {
     pub cid: u32,
-    /// Starts at 0, increments for every packet sent in a sequence.
-    pub packet_number_in_sequence: u8,
+    pub continuation_state: ContinuationState,
     pub ty: CtapHidResponseTy<'a>,
 }
 
@@ -533,8 +557,9 @@ impl CtapHidResponse<'_> {
                 data[16] = response.device_version_build;
                 data[17] = response.capabilities;
             }
-            CtapHidResponseTy::Message { length, data } => {
-                if self.packet_number_in_sequence == 0 {
+            CtapHidResponseTy::Message { length, data } => match self.continuation_state {
+                ContinuationState::Initial => {
+                    info!("data!!! {}", data);
                     CtapHeaderInitialization {
                         cid: self.cid,
                         cmd: 0x83,
@@ -549,10 +574,11 @@ impl CtapHidResponse<'_> {
                         );
                     }
                     report.packet[7..7 + data.len()].copy_from_slice(data);
-                } else {
+                }
+                ContinuationState::Continuation { sequence } => {
                     CtapHeaderContinuation {
                         cid: self.cid,
-                        seq: self.packet_number_in_sequence,
+                        seq: sequence,
                     }
                     .encode(report);
                     if data.len() > report.packet.len() - 5 {
@@ -564,7 +590,7 @@ impl CtapHidResponse<'_> {
                     }
                     report.packet[5..5 + data.len()].copy_from_slice(data);
                 }
-            }
+            },
             CtapHidResponseTy::RawReport(raw) => *report = *raw,
         }
     }
@@ -737,12 +763,17 @@ impl U2fResponse {
                 // success
                 data[status_codes_offset] = 0x90;
                 data[status_codes_offset + 1] = 0x00;
-                debug!("authenticate response raw {}", &data);
 
+                debug!(
+                    "authenticate response raw {}",
+                    &data[..status_codes_offset + 2]
+                );
                 status_codes_offset + 2
             }
-            U2fResponse::Error(_) => {
-                panic!("TODO: Implement encoding for MesageResponse error")
+            U2fResponse::Error(error) => {
+                data[0..2].copy_from_slice(&(*error as u16).to_be_bytes());
+
+                2
             }
             U2fResponse::Version => {
                 data[..6].copy_from_slice("U2F_V2".as_bytes());
@@ -757,8 +788,10 @@ impl U2fResponse {
     }
 }
 
+#[derive(Clone, Copy)]
 pub enum MessageResponseError {
     /// The request was rejected due to test-of-user-presence being required.
+    /// This actually indicates success when responding to check-only authenticate requests. This protocol is cursed.
     ConditionsNotSatisfied = 0x6985,
     /// The request was rejected due to an invalid key handle.
     WrongData = 0x6A80,
