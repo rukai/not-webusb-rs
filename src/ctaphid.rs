@@ -122,6 +122,20 @@ pub enum CtapHidResponseTy<'a> {
     },
     /// Use this to provide a response to a Ping or if you need to construct a custom response for any reason.
     RawReport(RawFidoReport),
+    Error(CtapHidError),
+}
+
+#[derive(Clone, Copy)]
+pub enum CtapHidError {
+    InvalidCommand = 0x01,
+    InvalidParameter = 0x02,
+    InvalidLen = 0x03,
+    InvalidSeq = 0x04,
+    MessageTimeout = 0x05,
+    ChannelBusy = 0x06,
+    LockRequired = 0x0A,
+    InvalidChannel = 0x0B,
+    Other = 0x7F,
 }
 
 pub struct InitResponse {
@@ -142,7 +156,6 @@ impl CtapHidResponse<'_> {
         // Not technically needed but makes it easier to debug outgoing packets.
         report.packet.fill(0);
 
-        info!("FidoResponse::encode");
         match &self.ty {
             CtapHidResponseTy::Init(response) => {
                 CtapHeaderInitialization {
@@ -195,6 +208,15 @@ impl CtapHidResponse<'_> {
                 }
             },
             CtapHidResponseTy::RawReport(raw) => *report = *raw,
+            CtapHidResponseTy::Error(error) => {
+                CtapHeaderInitialization {
+                    cid: self.cid,
+                    cmd: 0x3F,
+                    bcnt: 1,
+                }
+                .encode(report);
+                report.packet[7] = *error as u8;
+            }
         }
     }
 }

@@ -12,8 +12,8 @@ use usbd_human_interface_device::device::fido::{RawFido, RawFidoReport};
 use usbd_human_interface_device::prelude::*;
 
 use crate::ctaphid::{
-    ContinuationState, CtapHidRequest, CtapHidRequestTy, CtapHidResponse, CtapHidResponseTy,
-    InProgressMessage, InitResponse,
+    ContinuationState, CtapHidError, CtapHidRequest, CtapHidRequestTy, CtapHidResponse,
+    CtapHidResponseTy, InProgressMessage, InitResponse,
 };
 
 // as per FIDO CTAP spec maximum payload size is 7609 bytes
@@ -109,7 +109,8 @@ impl<'a, UsbBusT: UsbBus> NotWebUsb<'a, UsbBusT> {
                         }
                         CtapHidRequestTy::Unknown { cmd } => {
                             // TODO: handle error
-                            panic!("Unknown command {}", cmd);
+                            warn!("Unknown CTAPHID command {}", cmd);
+                            Some(CtapHidResponseTy::Error(CtapHidError::InvalidCommand))
                         }
                     };
 
@@ -139,7 +140,6 @@ impl<'a, UsbBusT: UsbBus> NotWebUsb<'a, UsbBusT> {
                 Ok(granted) => {
                     let full_u2f_size = granted.len();
                     info!("full_u2f_size {}", full_u2f_size);
-                    info!("reading in_progress_message");
                     let packet_size = if let ContinuationState::Initial =
                         in_progress_message.response_continuation_state
                     {
@@ -175,7 +175,7 @@ impl<'a, UsbBusT: UsbBus> NotWebUsb<'a, UsbBusT> {
 
                     if full_u2f_size == packet_size {
                         // finished!!!
-                        info!("finished writing response");
+                        info!("all packets for the in progress message have been sent");
                         self.in_progress_message_option = None;
                     }
                     granted.release(packet_size);

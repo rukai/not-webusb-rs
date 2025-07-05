@@ -1,7 +1,6 @@
 use arrayvec::ArrayVec;
 use bbqueue::Producer;
 use core::iter;
-use defmt::panic;
 use defmt::*;
 
 use crate::{MAXIMUM_CTAPHID_MESSAGE, MAXIMUM_CTAPHID_MESSAGE_X2};
@@ -127,8 +126,8 @@ pub fn respond_to_message(message_data: &[u8], tx: &mut Producer<MAXIMUM_CTAPHID
         }
         U2fRequest::Version => U2fResponse::Version,
         U2fRequest::Unknown { cla, ins } => {
-            panic!("unknown message request cla={} ins={}", cla, ins);
-            // TODO: error handling
+            warn!("unknown message request cla={} ins={}", cla, ins);
+            U2fResponse::Error(MessageResponseError::InsNotSupported)
         }
     };
 
