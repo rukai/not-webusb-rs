@@ -190,24 +190,27 @@ impl<'a, UsbBusT: UsbBus> NotWebUsb<'a, UsbBusT> {
                         Err(error) => panic!("Unexpected bbq error {}", error),
                     }
                 }
-                match self.fido.device().write_report(&self.raw_response) {
-                    Err(UsbHidError::WouldBlock) => {
-                        debug!("Failed to send response as usb would block, will retry");
-                    }
-                    Err(UsbHidError::Duplicate) => defmt::todo!("What does this mean?"),
-                    Ok(_) => {
-                        in_progress_message.response_ready_to_send = false;
 
-                        if in_progress_message.response_final_packet_is_ready_to_send {
-                            // finished!!!
-                            info!("all packets for the in progress message have been sent");
-                            self.in_progress_message_option = None;
-                        } else {
-                            info!("one packet was sent, but more remain to be sent");
+                if in_progress_message.response_ready_to_send {
+                    match self.fido.device().write_report(&self.raw_response) {
+                        Err(UsbHidError::WouldBlock) => {
+                            debug!("Failed to send response as usb would block, will retry");
                         }
-                    }
-                    Err(e) => {
-                        panic!("Failed to write fido report: {:?}", e)
+                        Err(UsbHidError::Duplicate) => defmt::todo!("What does this mean?"),
+                        Ok(_) => {
+                            in_progress_message.response_ready_to_send = false;
+
+                            if in_progress_message.response_final_packet_is_ready_to_send {
+                                // finished!!!
+                                info!("all packets for the in progress message have been sent");
+                                self.in_progress_message_option = None;
+                            } else {
+                                info!("one packet was sent, but more remain to be sent");
+                            }
+                        }
+                        Err(e) => {
+                            panic!("Failed to write fido report: {:?}", e)
+                        }
                     }
                 }
             }
