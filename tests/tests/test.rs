@@ -86,7 +86,7 @@ fn test() {
         origin: "".to_owned(),
         relying_party_id: "".to_owned(),
         allow_list: vec![PublicKeyCredentialDescriptor {
-            id: "abcdefghijklmnopqrstuvwxyzabcdefghijklmnop"
+            id: "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopr"
                 .as_bytes()
                 .to_vec(),
             transports: vec![Transport::USB],
