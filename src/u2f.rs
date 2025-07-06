@@ -289,8 +289,8 @@ impl U2fResponse {
                 data[..6].copy_from_slice("U2F_V2".as_bytes());
 
                 // success
-                data[7] = 0x90;
-                data[8] = 0x00;
+                data[6] = 0x90;
+                data[7] = 0x00;
 
                 8
             }
