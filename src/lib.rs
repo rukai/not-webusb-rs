@@ -76,6 +76,8 @@ impl<'a, UsbBusT: UsbBus> NotWebUsb<'a, UsbBusT> {
                                 current_request_payload_size: length as usize,
                                 current_request_payload_bytes_written: 0,
                                 response_continuation_state: ContinuationState::Initial,
+                                response_ready_to_send: false,
+                                response_final_packet_is_ready_to_send: false,
                             });
                             if let Some(in_progress_message) = &mut self.in_progress_message_option
                             {
@@ -123,8 +125,8 @@ impl<'a, UsbBusT: UsbBus> NotWebUsb<'a, UsbBusT> {
                         .encode(&mut self.raw_response);
                         info!("sending direct raw response {}", self.raw_response.packet);
                         match self.fido.device().write_report(&self.raw_response) {
-                            Err(UsbHidError::WouldBlock) => {}
-                            Err(UsbHidError::Duplicate) => {}
+                            Err(UsbHidError::WouldBlock) => defmt::todo!("error handling"),
+                            Err(UsbHidError::Duplicate) => defmt::todo!("What does this mean?"),
                             Ok(_) => {}
                             Err(e) => {
                                 panic!("Failed to write fido report: {:?}", e)
@@ -136,62 +138,76 @@ impl<'a, UsbBusT: UsbBus> NotWebUsb<'a, UsbBusT> {
         }
 
         if let Some(in_progress_message) = &mut self.in_progress_message_option {
-            match self.rx.read() {
-                Ok(granted) => {
-                    let full_u2f_size = granted.len();
-                    info!("full_u2f_size {}", full_u2f_size);
-                    let packet_size = if let ContinuationState::Initial =
-                        in_progress_message.response_continuation_state
-                    {
-                        full_u2f_size.min(57)
-                    } else {
-                        full_u2f_size.min(59)
-                    };
-                    info!("packet_size {}", packet_size);
-                    CtapHidResponse {
-                        cid: in_progress_message.cid,
-                        ty: CtapHidResponseTy::Message {
-                            length: full_u2f_size as u16,
-                            data: &granted[..packet_size],
-                        },
-                        continuation_state: in_progress_message.response_continuation_state,
-                    }
-                    .encode(&mut self.raw_response);
-                    info!(
-                        "sending prepared raw response {}",
-                        &self.raw_response.packet
-                    );
-
-                    // step sequence state
-                    match &mut in_progress_message.response_continuation_state {
-                        ContinuationState::Continuation { sequence } => {
-                            *sequence += 1;
+            // USB may have been blocked, leading to a response already being created but left unsent.
+            if !in_progress_message.response_ready_to_send {
+                match self.rx.read() {
+                    Ok(granted) => {
+                        let remaining_u2f_size = granted.len();
+                        info!("full_u2f_size {}", remaining_u2f_size);
+                        let packet_size = if let ContinuationState::Initial =
+                            in_progress_message.response_continuation_state
+                        {
+                            remaining_u2f_size.min(57)
+                        } else {
+                            remaining_u2f_size.min(59)
+                        };
+                        info!("packet_size {}", packet_size);
+                        in_progress_message.response_final_packet_is_ready_to_send =
+                            remaining_u2f_size == packet_size;
+                        CtapHidResponse {
+                            cid: in_progress_message.cid,
+                            ty: CtapHidResponseTy::Message {
+                                // only used in the initial message where it is treated as the full u2f size.
+                                length: remaining_u2f_size as u16,
+                                data: &granted[..packet_size],
+                            },
+                            continuation_state: in_progress_message.response_continuation_state,
                         }
-                        ContinuationState::Initial => {
-                            in_progress_message.response_continuation_state =
-                                ContinuationState::Continuation { sequence: 0 }
-                        }
-                    }
+                        .encode(&mut self.raw_response);
+                        info!(
+                            "sending prepared raw response {}",
+                            &self.raw_response.packet
+                        );
 
-                    if full_u2f_size == packet_size {
+                        // step sequence state
+                        match &mut in_progress_message.response_continuation_state {
+                            ContinuationState::Continuation { sequence } => {
+                                *sequence += 1;
+                            }
+                            ContinuationState::Initial => {
+                                in_progress_message.response_continuation_state =
+                                    ContinuationState::Continuation { sequence: 0 }
+                            }
+                        }
+                        in_progress_message.response_ready_to_send = true;
+
+                        granted.release(packet_size);
+                    }
+                    Err(bbqueue::Error::InsufficientSize) => {
+                        // This is expected when there are no bytes to read.
+
+                        // TODO: This logic is a bit sus, could it lead to deadlock if we completely fill the final packet?
+                    }
+                    Err(error) => panic!("Unexpected bbq error {}", error),
+                }
+            }
+            match self.fido.device().write_report(&self.raw_response) {
+                Err(UsbHidError::WouldBlock) => {
+                    debug!("Failed to send response as usb would block, will retry");
+                }
+                Err(UsbHidError::Duplicate) => defmt::todo!("What does this mean?"),
+                Ok(_) => {
+                    in_progress_message.response_ready_to_send = false;
+
+                    if in_progress_message.response_final_packet_is_ready_to_send {
                         // finished!!!
                         info!("all packets for the in progress message have been sent");
                         self.in_progress_message_option = None;
                     }
-                    granted.release(packet_size);
-                    match self.fido.device().write_report(&self.raw_response) {
-                        Err(UsbHidError::WouldBlock) => {}
-                        Err(UsbHidError::Duplicate) => {}
-                        Ok(_) => {}
-                        Err(e) => {
-                            panic!("Failed to write fido report: {:?}", e)
-                        }
-                    }
                 }
-                Err(bbqueue::Error::InsufficientSize) => {
-                    // This is expected when there are no bytes to read.
+                Err(e) => {
+                    panic!("Failed to write fido report: {:?}", e)
                 }
-                Err(error) => panic!("Unexpected bbq error {}", error),
             }
         }
     }

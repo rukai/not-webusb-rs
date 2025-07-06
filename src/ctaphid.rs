@@ -12,6 +12,8 @@ pub struct InProgressMessage {
     pub current_request_payload_size: usize,
     pub current_request_payload_bytes_written: usize,
     pub response_continuation_state: ContinuationState,
+    pub response_ready_to_send: bool,
+    pub response_final_packet_is_ready_to_send: bool,
 }
 
 #[derive(Clone, Copy)]
