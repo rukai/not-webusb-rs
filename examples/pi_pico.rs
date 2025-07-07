@@ -1,6 +1,7 @@
 #![no_std]
 #![no_main]
 
+use arrayvec::ArrayVec;
 use bsp::entry;
 use bsp::hal::{
     clocks::{Clock, init_clocks_and_plls},
@@ -106,7 +107,30 @@ fn main() -> ! {
             enter_flash_mode();
         }
 
-        not_webusb.poll(&mut usb_dev);
+        // TODO: can we make NotWebUsb poll logic allow only calling when usb_dev.poll returns true?
+        usb_dev.poll(&mut [not_webusb.fido_class()]);
+        not_webusb.poll();
+
+        if let Some(request) = not_webusb.check_pending_request() {
+            info!("processing request");
+            let response: ArrayVec<u8, 255> = request.iter().copied().map(rot13).collect();
+
+            not_webusb.send_response(response);
+        }
+    }
+}
+
+fn rot13(x: u8) -> u8 {
+    if ('A'..'N').contains(&(x as char)) {
+        x + 13
+    } else if ('N'..='Z').contains(&(x as char)) {
+        x - 13
+    } else if ('a'..'n').contains(&(x as char)) {
+        x + 13
+    } else if ('n'..='z').contains(&(x as char)) {
+        x - 13
+    } else {
+        x
     }
 }
 

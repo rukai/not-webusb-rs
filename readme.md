@@ -4,10 +4,8 @@ A port of [I Cant Believe Its Not WebUSB](https://github.com/ArcaneNibble/i-cant
 This crate allows for communication between specially programmed usb devices and websites without the use of webUSB.
 Instead it uses the browsers U2F functionality to send a payload to the device.
 
-<!--
 The goal is to be a production ready library for use in real devices.
 However, while it works fine for simple use cases, it is not currently in a state where I would be comfortable deploying this in production.
--->
 
 It provides:
 
@@ -16,5 +14,7 @@ It provides:
 
 TODO:
 
-* This project is a work in progress and does not work yet.
+* Implement packetization of user packets on top of fido (currently supports packet sizes of about 64 bytes)
+* Make protocol implementation more robust
+* Internal cleanup
 * provide wasm crate for interacting with not-webusb

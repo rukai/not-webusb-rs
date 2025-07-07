@@ -1,4 +1,5 @@
-use crate::u2f::respond_to_message;
+use crate::u2f::{receive_user_request, send_user_response};
+use arrayvec::ArrayVec;
 use bbqueue::Producer;
 use defmt::panic;
 use defmt::*;
@@ -24,7 +25,11 @@ pub enum ContinuationState {
 
 impl InProgressMessage {
     /// Returns true if the request has finished parsing and the response was sent
-    pub fn write_data(&mut self, data: &[u8], tx: &mut Producer<MAXIMUM_CTAPHID_MESSAGE_X2>) {
+    pub fn receive_user_request(
+        &mut self,
+        data: &[u8],
+        tx: &mut Producer<MAXIMUM_CTAPHID_MESSAGE_X2>,
+    ) -> Option<ArrayVec<u8, 255>> {
         info!("write_data");
         self.request_buffer[self.current_request_payload_bytes_written
             ..self.current_request_payload_bytes_written + data.len()]
@@ -33,11 +38,20 @@ impl InProgressMessage {
         // if we have completely received the request, respond to it.
         self.current_request_payload_bytes_written += data.len();
         if self.current_request_payload_bytes_written >= self.current_request_payload_size {
-            respond_to_message(
+            return receive_user_request(
                 &self.request_buffer[..self.current_request_payload_size],
                 tx,
             );
         }
+        None
+    }
+
+    pub fn send_user_response(
+        &mut self,
+        response: &[u8],
+        tx: &mut Producer<MAXIMUM_CTAPHID_MESSAGE_X2>,
+    ) {
+        send_user_response(response, tx);
     }
 }
 

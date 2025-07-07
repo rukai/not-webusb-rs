@@ -5,7 +5,12 @@ use defmt::*;
 
 use crate::{MAXIMUM_CTAPHID_MESSAGE, MAXIMUM_CTAPHID_MESSAGE_X2};
 
-pub fn respond_to_message(message_data: &[u8], tx: &mut Producer<MAXIMUM_CTAPHID_MESSAGE_X2>) {
+/// Receives and responds to incoming requests.
+/// If a tunnelled not-webusb request is present, instead of responding to it, the bytes of the tunneled request are returned.
+pub fn receive_user_request(
+    message_data: &[u8],
+    tx: &mut Producer<MAXIMUM_CTAPHID_MESSAGE_X2>,
+) -> Option<ArrayVec<u8, 255>> {
     let request = U2fRequest::decode(message_data);
 
     //info!("received u2f request {:?}", request); // TODO: ArrayVec defmt support?
@@ -52,76 +57,7 @@ pub fn respond_to_message(message_data: &[u8], tx: &mut Producer<MAXIMUM_CTAPHID
                 // Actually indicates success.
                 U2fResponse::Error(MessageResponseError::ConditionsNotSatisfied)
             } else {
-                // TODO: pull this logic out
-                let response: ArrayVec<u8, 255> = key_handle
-                    .into_iter()
-                    .map(|x| {
-                        // apply rot13
-                        if ('A'..'N').contains(&(x as char)) {
-                            x + 13
-                        } else if ('N'..='Z').contains(&(x as char)) {
-                            x - 13
-                        } else if ('a'..'n').contains(&(x as char)) {
-                            x + 13
-                        } else if ('n'..='z').contains(&(x as char)) {
-                            x - 13
-                        } else {
-                            x
-                        }
-                    })
-                    .collect();
-
-                // The signature contains two ASN.1 integers that we can smuggle data in.
-                // They must be exactly 20 bytes each and must never be > 0, since they are signed integers this means starting with 0x7f
-
-                let mut payload_written_bytes = 0;
-
-                let mut signature: ArrayVec<u8, 255> = [
-                    0x30, // ASN.1 sequence
-                    0x44, // Number of bytes in ASN.1 sequence
-                    0x02, // ASN.1 integer
-                    0x20, // Number of bytes in integer
-                    0x7f, // first byte of 0x7f is used to force the signed integer to be positive for chrome compatibility
-                ]
-                .into_iter()
-                .collect();
-
-                // must write exactly 0x1f bytes to signature
-                let payload_bytes_to_write = (response.len() - payload_written_bytes).min(0x1f);
-                signature.extend(
-                    response[payload_written_bytes..payload_written_bytes + payload_bytes_to_write]
-                        .iter()
-                        .copied()
-                        .chain(iter::repeat(0))
-                        .take(0x1f),
-                );
-                payload_written_bytes += payload_bytes_to_write;
-
-                signature.extend([
-                    0x02, // ASN.1 integer
-                    0x20, // Number of bytes in integer
-                    0x7f, // first byte of 0x7f is used to force the signed integer to be positive for chrome compatibility
-                ]);
-
-                let payload_bytes_to_write = (response.len() - payload_written_bytes).min(0x1f);
-                // must write exactly 0x1f bytes to signature
-                signature.extend(
-                    response[payload_written_bytes..payload_written_bytes + payload_bytes_to_write]
-                        .iter()
-                        .copied()
-                        .chain(iter::repeat(0))
-                        .take(0x1f),
-                );
-                payload_written_bytes += payload_bytes_to_write;
-
-                info!("payload_written_bytes {}", payload_written_bytes);
-                info!("signature {}", signature.as_slice());
-
-                U2fResponse::Authenticate {
-                    user_presence: true,
-                    counter: 0,
-                    signature,
-                }
+                return Some(key_handle);
             }
         }
         U2fRequest::Version => U2fResponse::Version,
@@ -131,6 +67,68 @@ pub fn respond_to_message(message_data: &[u8], tx: &mut Producer<MAXIMUM_CTAPHID
         }
     };
 
+    let mut granted = tx.grant_exact(MAXIMUM_CTAPHID_MESSAGE).unwrap();
+    let size = response.encode(&mut granted);
+    info!("wrote {} bytes to outgoing response", size);
+    granted.commit(size);
+
+    None
+}
+
+pub fn send_user_response(response: &[u8], tx: &mut Producer<MAXIMUM_CTAPHID_MESSAGE_X2>) {
+    // the signature contains two asn.1 integers that we can smuggle data in.
+    // They must be exactly 20 bytes each and must never be > 0, since they are signed integers this means starting with 0x7f
+
+    let mut payload_written_bytes = 0;
+
+    let mut signature: ArrayVec<u8, 255> = [
+        0x30, // ASN.1 sequence
+        0x44, // Number of bytes in ASN.1 sequence
+        0x02, // ASN.1 integer
+        0x20, // Number of bytes in integer
+        0x7f, // first byte of 0x7f is used to force the signed integer to be positive for chrome compatibility
+    ]
+    .into_iter()
+    .collect();
+
+    // must write exactly 0x1f bytes to signature
+    let payload_bytes_to_write = (response.len() - payload_written_bytes).min(0x1f);
+    signature.extend(
+        response[payload_written_bytes..payload_written_bytes + payload_bytes_to_write]
+            .iter()
+            .copied()
+            .chain(iter::repeat(0))
+            .take(0x1f),
+    );
+    payload_written_bytes += payload_bytes_to_write;
+
+    signature.extend([
+        0x02, // ASN.1 integer
+        0x20, // Number of bytes in integer
+        0x7f, // first byte of 0x7f is used to force the signed integer to be positive for chrome compatibility
+    ]);
+
+    let payload_bytes_to_write = (response.len() - payload_written_bytes).min(0x1f);
+    // must write exactly 0x1f bytes to signature
+    signature.extend(
+        response[payload_written_bytes..payload_written_bytes + payload_bytes_to_write]
+            .iter()
+            .copied()
+            .chain(iter::repeat(0))
+            .take(0x1f),
+    );
+    payload_written_bytes += payload_bytes_to_write;
+
+    info!("payload_written_bytes {}", payload_written_bytes);
+    info!("signature {}", signature.as_slice());
+
+    let response = U2fResponse::Authenticate {
+        user_presence: true,
+        counter: 0,
+        signature,
+    };
+
+    // TODO: move into common function
     let mut granted = tx.grant_exact(MAXIMUM_CTAPHID_MESSAGE).unwrap();
     let size = response.encode(&mut granted);
     info!("wrote {} bytes to outgoing response", size);
