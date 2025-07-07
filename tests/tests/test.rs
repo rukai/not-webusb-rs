@@ -82,9 +82,11 @@ fn test() {
     }));
 
     let sign_args = SignArgs {
-        client_data_hash: [0; 32],
-        origin: "".to_owned(),
-        relying_party_id: "".to_owned(),
+        client_data_hash: [0; 32], // TODO: can we control this from the browser API? If so, use it for smuggling!
+        origin: "https://dpedal.com".to_owned(),
+        // This is the field that gets sha256'd and put into `application_parameter`
+        // What does the browser PUT THERE? Can we use it to check for dpedal.com??
+        relying_party_id: "foo_id".to_owned(),
         allow_list: vec![PublicKeyCredentialDescriptor {
             id: "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz"
                 .as_bytes()
