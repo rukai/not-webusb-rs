@@ -94,7 +94,7 @@ fn main() -> ! {
     flash_led.start(100.millis());
     let mut led_state = false;
 
-    let mut not_webusb = NotWebUsb::new(fido);
+    let mut not_webusb = NotWebUsb::new(fido, None);
 
     info!("begin main loop");
     loop {

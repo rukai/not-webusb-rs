@@ -34,6 +34,7 @@ pub struct NotWebUsb<'a, UsbBusT: UsbBus> {
     rx: Consumer<'a, MAXIMUM_CTAPHID_MESSAGE_X2>,
     raw_response: RawFidoReport,
     fido: UsbHidClass<'a, UsbBusT, HCons<RawFido<'a, UsbBusT>, HNil>>,
+    require_web_origin: Option<[u8; 32]>,
 
     /// User fields
     request: Option<ArrayVec<u8, 255>>,
@@ -41,7 +42,23 @@ pub struct NotWebUsb<'a, UsbBusT: UsbBus> {
 }
 
 impl<'a, UsbBusT: UsbBus> NotWebUsb<'a, UsbBusT> {
-    pub fn new(fido: UsbHidClass<'a, UsbBusT, HCons<RawFido<'a, UsbBusT>, HNil>>) -> Self {
+    /// Create a new NotWebusb instance.
+    ///
+    /// ## require_web_origin
+    /// When `require_web_origin` is Some, NotWebusb will only forward requests to the user that came from the provided web origin.
+    /// The web origin is provided as an sha256 hash of the domain name.
+    /// This could be calculated by e.g. `echo -n "example.com" | sha256 | xxd`
+    /// The web application can slightly alter the domain used via the webauth [rpId field](https://developer.mozilla.org/en-US/docs/Web/API/PublicKeyCredentialRequestOptions#rpid)
+    /// Browsers will only allow this field to reduce scope e.g. `example.com` -> `sub.example.com`
+    /// And browsers entirely forbid use of U2F from `http://` websites, `https://`` is required.
+    ///
+    /// Internally NotWebusb performs the `require_web_origin` check by comparing the provided hash against the `application_parameter` field of the U2F authenticate request.
+    ///
+    /// When `require_web_origin`` is None, requests from any webpage are accepted.
+    pub fn new(
+        fido: UsbHidClass<'a, UsbBusT, HCons<RawFido<'a, UsbBusT>, HNil>>,
+        require_web_origin: Option<[u8; 32]>,
+    ) -> Self {
         let (tx, rx) = OUTGOING_MESSAGE_BYTES.try_split().unwrap();
         NotWebUsb {
             fido,
@@ -50,6 +67,7 @@ impl<'a, UsbBusT: UsbBus> NotWebUsb<'a, UsbBusT> {
             cid_next: 1,
             in_progress_message_option: None,
             raw_response: RawFidoReport::default(),
+            require_web_origin,
             request: None,
             response: None,
         }
