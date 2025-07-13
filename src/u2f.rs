@@ -10,6 +10,7 @@ use crate::{MAXIMUM_CTAPHID_MESSAGE, MAXIMUM_CTAPHID_MESSAGE_X2};
 pub fn receive_user_request(
     message_data: &[u8],
     tx: &mut Producer<MAXIMUM_CTAPHID_MESSAGE_X2>,
+    web_origin_filter: &dyn Fn([u8; 32]) -> bool,
 ) -> Option<ArrayVec<u8, 255>> {
     let request = U2fRequest::decode(message_data);
 
@@ -51,13 +52,21 @@ pub fn receive_user_request(
         U2fRequest::Authenticate {
             key_handle,
             control,
+            application_parameter,
             ..
         } => {
             if let AuthenticateControl::CheckOnly = control {
                 // Actually indicates success.
                 U2fResponse::Error(MessageResponseError::ConditionsNotSatisfied)
-            } else {
+            } else if web_origin_filter(application_parameter) {
                 return Some(key_handle);
+            } else {
+                // web_origin_filter failed, so send a valid response, but dont give any user data.
+                U2fResponse::Authenticate {
+                    user_presence: true,
+                    counter: 0,
+                    signature: ArrayVec::new(),
+                }
             }
         }
         U2fRequest::Version => U2fResponse::Version,

@@ -34,7 +34,7 @@ pub struct NotWebUsb<'a, UsbBusT: UsbBus> {
     rx: Consumer<'a, MAXIMUM_CTAPHID_MESSAGE_X2>,
     raw_response: RawFidoReport,
     fido: UsbHidClass<'a, UsbBusT, HCons<RawFido<'a, UsbBusT>, HNil>>,
-    require_web_origin: Option<[u8; 32]>,
+    web_origin_filter: &'a dyn Fn([u8; 32]) -> bool,
 
     /// User fields
     request: Option<ArrayVec<u8, 255>>,
@@ -44,20 +44,22 @@ pub struct NotWebUsb<'a, UsbBusT: UsbBus> {
 impl<'a, UsbBusT: UsbBus> NotWebUsb<'a, UsbBusT> {
     /// Create a new NotWebusb instance.
     ///
-    /// ## require_web_origin
-    /// When `require_web_origin` is Some, NotWebusb will only forward requests to the user that came from the provided web origin.
-    /// The web origin is provided as an sha256 hash of the domain name.
-    /// This could be calculated by e.g. `echo -n "example.com" | sha256 | xxd`
+    /// ## web_origin_filter
+    /// The `web_origin_filter` is used to limit the websites that can talk to your device.
+    /// The `web_origin_filter` function is called once for every request, if `web_origin_filter` returns true the request is passed on to the user, otherwise the request is dropped.
+    /// If you dont care care about limiting the websites that can talk to your device, simply use `&|_| true` as the web_origin_filter to accept all requests, otherwise read on.
+    ///
+    /// The argument passed to the `web_origin_filter is the sha256 hash of the domain name.
+    /// This could be calculated by e.g. `echo -n "example.com" | sha256 | od -t u1
     /// The web application can slightly alter the domain used via the webauth [rpId field](https://developer.mozilla.org/en-US/docs/Web/API/PublicKeyCredentialRequestOptions#rpid)
     /// Browsers will only allow this field to reduce scope e.g. `example.com` -> `sub.example.com`
     /// And browsers entirely forbid use of U2F from `http://` websites, `https://`` is required.
+    /// This gives us a gaurantee that the website the device is talking to is the real website at the hashed domain.
     ///
-    /// Internally NotWebusb performs the `require_web_origin` check by comparing the provided hash against the `application_parameter` field of the U2F authenticate request.
-    ///
-    /// When `require_web_origin`` is None, requests from any webpage are accepted.
+    /// Internally NotWebusb uses the `application_parameter` field of the U2F authenticate request as the argument to `web_origin_filter`.
     pub fn new(
         fido: UsbHidClass<'a, UsbBusT, HCons<RawFido<'a, UsbBusT>, HNil>>,
-        require_web_origin: Option<[u8; 32]>,
+        web_origin_filter: &'a dyn Fn([u8; 32]) -> bool,
     ) -> Self {
         let (tx, rx) = OUTGOING_MESSAGE_BYTES.try_split().unwrap();
         NotWebUsb {
@@ -67,7 +69,7 @@ impl<'a, UsbBusT: UsbBus> NotWebUsb<'a, UsbBusT> {
             cid_next: 1,
             in_progress_message_option: None,
             raw_response: RawFidoReport::default(),
-            require_web_origin,
+            web_origin_filter,
             request: None,
             response: None,
         }
@@ -112,9 +114,11 @@ impl<'a, UsbBusT: UsbBus> NotWebUsb<'a, UsbBusT> {
                             response_final_packet_is_ready_to_send: false,
                         });
                         if let Some(in_progress_message) = &mut self.in_progress_message_option {
-                            if let Some(request) =
-                                in_progress_message.receive_user_request(&data, &mut self.tx)
-                            {
+                            if let Some(request) = in_progress_message.receive_user_request(
+                                &data,
+                                &mut self.tx,
+                                &self.web_origin_filter,
+                            ) {
                                 if self.request.is_some() {
                                     panic!(
                                         "TODO: handle case where request received when already have one"
@@ -128,9 +132,11 @@ impl<'a, UsbBusT: UsbBus> NotWebUsb<'a, UsbBusT> {
                     CtapHidRequestTy::Continuation { data, .. } => {
                         if let Some(in_progress_message) = &mut self.in_progress_message_option {
                             if in_progress_message.cid == request.cid {
-                                if let Some(request) =
-                                    in_progress_message.receive_user_request(&data, &mut self.tx)
-                                {
+                                if let Some(request) = in_progress_message.receive_user_request(
+                                    &data,
+                                    &mut self.tx,
+                                    &self.web_origin_filter,
+                                ) {
                                     if self.request.is_some() {
                                         panic!(
                                             "TODO: handle case where request received when already have one 2"

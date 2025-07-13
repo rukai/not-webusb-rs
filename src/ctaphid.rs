@@ -29,6 +29,7 @@ impl InProgressMessage {
         &mut self,
         data: &[u8],
         tx: &mut Producer<MAXIMUM_CTAPHID_MESSAGE_X2>,
+        web_origin_filter: &dyn Fn([u8; 32]) -> bool,
     ) -> Option<ArrayVec<u8, 255>> {
         info!("write_data");
         self.request_buffer[self.current_request_payload_bytes_written
@@ -41,6 +42,7 @@ impl InProgressMessage {
             return receive_user_request(
                 &self.request_buffer[..self.current_request_payload_size],
                 tx,
+                web_origin_filter,
             );
         }
         None
