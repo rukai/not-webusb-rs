@@ -12,9 +12,25 @@ It provides:
 * a [usb-device](https://github.com/rust-embedded-community/usb-device) class implementation that runs on your microcontroller
 * sample javascript code for talking to the microcontroller from a website. <!--(or a rust crate if your into wasm)-->
 
-TODO:
+## TODO
 
 * Implement packetization of user packets on top of fido (currently supports packet sizes of about 64 bytes)
 * Make protocol implementation more robust
 * Internal cleanup
 * provide wasm crate for interacting with not-webusb
+
+## Examples
+
+TODO
+
+## Features
+
+* `defmt` - enable defmt logging
+
+## Test compilation
+
+Install the following system packages:
+
+```shell
+sudo apt install ninja-build mercurial python-is-python3 g++-14 libudev-dev
+```

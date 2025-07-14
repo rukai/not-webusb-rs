@@ -10,8 +10,11 @@ use bsp::hal::{
     watchdog::Watchdog,
 };
 use cortex_m::prelude::*;
+#[cfg(feature = "defmt")]
 use defmt::panic;
+#[cfg(feature = "defmt")]
 use defmt::*;
+#[cfg(feature = "defmt")]
 use defmt_rtt as _;
 use embedded_hal::digital::{InputPin, OutputPin};
 use fugit::ExtU32;
@@ -94,14 +97,9 @@ fn main() -> ! {
     flash_led.start(100.millis());
     let mut led_state = false;
 
-    // sha256 hash of "rukai.github.io"
-    const GITHUB_ORIGIN_HASH: [u8; 32] = [
-        177, 35, 155, 252, 236, 173, 132, 229, 7, 216, 88, 116, 147, 211, 15, 63, 109, 115, 157,
-        167, 78, 170, 168, 131, 115, 65, 251, 76, 71, 75, 154, 114,
-    ];
+    let mut not_webusb = NotWebUsb::new(fido, &|_| true);
 
-    let mut not_webusb = NotWebUsb::new(fido, &|origin_hash| origin_hash == GITHUB_ORIGIN_HASH);
-
+    #[cfg(feature = "defmt")]
     info!("begin main loop");
     loop {
         if flash_led.wait().is_ok() {
@@ -118,6 +116,7 @@ fn main() -> ! {
         not_webusb.poll();
 
         if let Some(request) = not_webusb.check_pending_request() {
+            #[cfg(feature = "defmt")]
             info!("processing request");
             let response: ArrayVec<u8, 255> = request.iter().copied().map(rot13).collect();
 
@@ -141,6 +140,7 @@ fn rot13(x: u8) -> u8 {
 }
 
 fn enter_flash_mode() -> ! {
+    #[cfg(feature = "defmt")]
     info!("entering flash mode");
     reset_to_usb_boot(0, 0);
     panic!()

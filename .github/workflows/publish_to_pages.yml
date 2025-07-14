@@ -19,9 +19,10 @@ jobs:
   build:
     environment:
       name: github-pages
+      #url: ${{ steps.deployment.outputs.page_url }}
       url: ${{ steps.setup_pages.outputs.base_url }}
     name: "publish webpage"
-    runs-on: ${{ matrix.runner }}
+    runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
     - name: Setup Pages
