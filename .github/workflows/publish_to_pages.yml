@@ -1,0 +1,44 @@
+name: publish to github pages
+
+on:
+  push:
+    branches: [ main ]
+
+# Cancel already running jobs
+concurrency:
+  group: publish_to_pages_${{ github.head_ref }}
+  cancel-in-progress: true
+
+# Sets permissions of the GITHUB_TOKEN to allow deployment to GitHub Pages
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    environment:
+      name: github-pages
+      url: ${{ steps.setup_pages.outputs.base_url }}
+    name: "publish webpage"
+    runs-on: ${{ matrix.runner }}
+    steps:
+    - uses: actions/checkout@v4
+    - name: Setup Pages
+      uses: actions/configure-pages@v4
+      id: setup_pages
+    - name: Run benches
+      run: |
+        cd ussal-client
+        # The USSAL_TOKEN is unique per user and can be revoked individually
+        # We then internally use TLS with letsencrypt to encrypt and authenticate the server.
+        cargo run --release -- --auth-token ${{ secrets.USSAL_TOKEN }} --ci
+    - name: Upload pages
+      uses: actions/upload-pages-artifact@v3
+      with:
+        path: 'ussal-client/bench_ci_web_root'
+    - name: Deploy pages
+      uses: actions/deploy-pages@v4
