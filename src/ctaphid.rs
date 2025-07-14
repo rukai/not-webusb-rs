@@ -1,11 +1,21 @@
 use crate::u2f::{receive_user_request, send_user_response};
+use crate::{MAXIMUM_CTAPHID_MESSAGE, MAXIMUM_CTAPHID_MESSAGE_X2};
 use arrayvec::ArrayVec;
 use bbqueue::Producer;
-use defmt::panic;
-use defmt::*;
 use usbd_human_interface_device::device::fido::RawFidoReport;
 
-use crate::{MAXIMUM_CTAPHID_MESSAGE, MAXIMUM_CTAPHID_MESSAGE_X2};
+// WHY IS THIS NEEDED???
+macro_rules! info {
+    ($s:literal $(, $x:expr)* $(,)?) => {
+        {
+            #[cfg(feature = "defmt")]
+            ::defmt::info!($s $(, $x)*);
+            #[cfg(not(feature = "defmt"))]
+            #[allow(clippy::let_underscore_untyped, clippy::ignored_unit_patterns)]
+            let _ = ($( & $x ),*);
+        }
+    };
+}
 
 pub struct InProgressMessage {
     pub cid: u32,
@@ -57,7 +67,7 @@ impl InProgressMessage {
     }
 }
 
-#[derive(Format)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct CtapHidRequest {
     pub cid: u32,
     pub ty: CtapHidRequestTy,
@@ -92,7 +102,7 @@ impl CtapHidRequest {
     }
 }
 
-#[derive(Format)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum CtapHidRequestTy {
     /// Initialize
     Init {

@@ -1,12 +1,11 @@
 #![no_std]
 
 pub mod ctaphid;
+pub(crate) mod fmt;
 pub mod u2f;
 
 use arrayvec::ArrayVec;
 use bbqueue::{BBBuffer, Consumer, Producer};
-use defmt::panic;
-use defmt::*;
 use frunk::{HCons, HNil};
 use usb_device::{UsbError, bus::UsbBus};
 use usbd_human_interface_device::device::fido::{RawFido, RawFidoReport};
@@ -179,8 +178,8 @@ impl<'a, UsbBusT: UsbBus> NotWebUsb<'a, UsbBusT> {
                     .encode(&mut self.raw_response);
                     info!("sending direct raw response {}", self.raw_response.packet);
                     match self.fido.device().write_report(&self.raw_response) {
-                        Err(UsbHidError::WouldBlock) => defmt::todo!("error handling"),
-                        Err(UsbHidError::Duplicate) => defmt::todo!("What does this mean?"),
+                        Err(UsbHidError::WouldBlock) => todo!("error handling"),
+                        Err(UsbHidError::Duplicate) => todo!("What does this mean?"),
                         Ok(_) => {}
                         Err(e) => {
                             panic!("Failed to write fido report: {:?}", e)
@@ -245,7 +244,10 @@ impl<'a, UsbBusT: UsbBus> NotWebUsb<'a, UsbBusT> {
 
                         // TODO: This logic is a bit sus, could it lead to deadlock if we completely fill the final packet?
                     }
+                    #[cfg(feature = "defmt")]
                     Err(error) => panic!("Unexpected bbq error {}", error),
+                    #[cfg(not(feature = "defmt"))]
+                    Err(_) => panic!("Unexpected bbq error"),
                 }
             }
 
@@ -254,7 +256,7 @@ impl<'a, UsbBusT: UsbBus> NotWebUsb<'a, UsbBusT> {
                     Err(UsbHidError::WouldBlock) => {
                         debug!("Failed to send response as usb would block, will retry");
                     }
-                    Err(UsbHidError::Duplicate) => defmt::todo!("What does this mean?"),
+                    Err(UsbHidError::Duplicate) => todo!("What does this mean?"),
                     Ok(_) => {
                         in_progress_message.response_ready_to_send = false;
 

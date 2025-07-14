@@ -15,9 +15,6 @@ permissions:
   pages: write
   id-token: write
 
-env:
-  CARGO_TERM_COLOR: always
-
 jobs:
   build:
     environment:
@@ -30,15 +27,9 @@ jobs:
     - name: Setup Pages
       uses: actions/configure-pages@v4
       id: setup_pages
-    - name: Run benches
-      run: |
-        cd ussal-client
-        # The USSAL_TOKEN is unique per user and can be revoked individually
-        # We then internally use TLS with letsencrypt to encrypt and authenticate the server.
-        cargo run --release -- --auth-token ${{ secrets.USSAL_TOKEN }} --ci
     - name: Upload pages
       uses: actions/upload-pages-artifact@v3
       with:
-        path: 'ussal-client/bench_ci_web_root'
+        path: 'web'
     - name: Deploy pages
       uses: actions/deploy-pages@v4

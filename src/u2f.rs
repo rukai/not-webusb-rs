@@ -1,9 +1,7 @@
+use crate::{MAXIMUM_CTAPHID_MESSAGE, MAXIMUM_CTAPHID_MESSAGE_X2};
 use arrayvec::ArrayVec;
 use bbqueue::Producer;
 use core::iter;
-use defmt::*;
-
-use crate::{MAXIMUM_CTAPHID_MESSAGE, MAXIMUM_CTAPHID_MESSAGE_X2};
 
 /// Receives and responds to incoming requests.
 /// If a tunnelled not-webusb request is present, instead of responding to it, the bytes of the tunneled request are returned.
@@ -205,7 +203,7 @@ impl U2fRequest {
     }
 }
 
-#[derive(defmt::Format)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum AuthenticateControl {
     CheckOnly,
     EnforceUserPresenceAndSign,
