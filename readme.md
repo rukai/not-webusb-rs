@@ -27,10 +27,13 @@ TODO
 
 * `defmt` - enable defmt logging
 
-## Test compilation
+## Running integration tests
 
-Install the following system packages:
+Install system deps:
 
 ```shell
+# TODO: confirm which are really needed
 sudo apt install ninja-build mercurial python-is-python3 g++-14 libudev-dev
 ```
+
+Flash the rot13 example firmware to a device and then run `cargo test`.

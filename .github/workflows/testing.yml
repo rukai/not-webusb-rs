@@ -48,24 +48,16 @@ jobs:
         # we also need to add Debug or Release to the key so that a separate cache is used.
         # Otherwise only the last build to finish would get saved to the cache.
         key: ${{ matrix.name }}
-    - name: Install system deps
-      if: runner.os == 'Linux'
-      run: sudo apt install -y ninja-build mercurial python-is-python3 g++-14 libudev-dev
     - name: Install cargo-hack
       run: cargo install cargo-hack --version 0.5.8
     - name: Check `cargo fmt` was run
       run: cargo fmt --all -- --check
 
     - name: Ensure that the library compiles and has no warnings under every possible combination of features
-      if: runner.os == 'Linux'
       # some things to explicitly point out:
       # * clippy also reports rustc warnings and errors
       # * clippy --all-targets causes clippy to run against tests and examples which it doesn't do by default.
       run: cargo hack --feature-powerset clippy --all-targets --locked ${{ matrix.cargo_profile }} -- -D warnings
-    - name: Ensure that the library compiles and has no warnings under every possible combination of features
-      if: runner.os != 'Linux'
-      run: cargo hack --feature-powerset clippy --locked ${{ matrix.cargo_profile }} -- -D warnings
-
     - name: Ensure that the examples compile and have no warnings under every possible combination of features
       run: |
         cd examples/pico

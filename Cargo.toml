@@ -32,7 +32,7 @@ defmt = [
 ]
 
 [dev-dependencies]
-authenticator = { version = "0.4.1", default-features = false, features = ["crypto_dummy"] }
+authenticator = { version = "0.4.0", default-features = false, features = ["crypto_dummy"] }
 env_logger = "0.11.8"
 pretty_assertions = "1.4.1"
 
