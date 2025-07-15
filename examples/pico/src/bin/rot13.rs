@@ -3,15 +3,8 @@
 
 use arrayvec::ArrayVec;
 use bsp::entry;
-use bsp::hal::{
-    clocks::{Clock, init_clocks_and_plls},
-    pac,
-    sio::Sio,
-    watchdog::Watchdog,
-};
+use bsp::hal::{clocks::init_clocks_and_plls, pac, sio::Sio, watchdog::Watchdog};
 use cortex_m::prelude::*;
-#[cfg(feature = "defmt")]
-use defmt::panic;
 #[cfg(feature = "defmt")]
 use defmt::*;
 #[cfg(feature = "defmt")]
@@ -21,7 +14,7 @@ use fugit::ExtU32;
 use not_webusb::NotWebUsb;
 use panic_probe as _;
 use rp_pico as bsp;
-use rp2040_hal::{Timer, rom_data::reset_to_usb_boot};
+use rp2040_hal::Timer;
 use usb_device::{
     bus::UsbBusAllocator,
     device::{StringDescriptors, UsbDeviceBuilder, UsbVidPid},
@@ -32,7 +25,6 @@ use usbd_human_interface_device::prelude::*;
 #[entry]
 fn main() -> ! {
     let mut pac = pac::Peripherals::take().unwrap();
-    let core = pac::CorePeripherals::take().unwrap();
     let mut watchdog = Watchdog::new(pac.WATCHDOG);
     let sio = Sio::new(pac.SIO);
 
@@ -50,8 +42,6 @@ fn main() -> ! {
     .unwrap();
 
     let timer = Timer::new(pac.TIMER, &mut pac.RESETS, &clocks);
-
-    let mut delay = cortex_m::delay::Delay::new(core.SYST, clocks.system_clock.freq().to_Hz());
 
     let pins = bsp::Pins::new(
         pac.IO_BANK0,
@@ -83,16 +73,6 @@ fn main() -> ! {
     let mut led_pin = pins.led.into_push_pull_output();
     let mut enter_flash_mode_pin = pins.gpio2.into_pull_up_input();
 
-    for _ in 0..4 {
-        led_pin.set_high().unwrap();
-        delay.delay_ms(500);
-        led_pin.set_low().unwrap();
-        delay.delay_ms(500);
-    }
-
-    let mut tick_count_down = timer.count_down();
-    tick_count_down.start(1.millis());
-
     let mut flash_led = timer.count_down();
     flash_led.start(100.millis());
     let mut led_state = false;
@@ -101,6 +81,7 @@ fn main() -> ! {
 
     #[cfg(feature = "defmt")]
     info!("begin main loop");
+
     loop {
         if flash_led.wait().is_ok() {
             led_state = !led_state;
@@ -108,7 +89,8 @@ fn main() -> ! {
         }
 
         if enter_flash_mode_pin.is_low().unwrap_or(true) {
-            enter_flash_mode();
+            // Use this for entering bootsel mode without disconnecting/reconnecting the pico if you dont have a debugger
+            pico_example::enter_flash_mode();
         }
 
         // TODO: can we make NotWebUsb poll logic allow only calling when usb_dev.poll returns true?
@@ -118,30 +100,10 @@ fn main() -> ! {
         if let Some(request) = not_webusb.check_pending_request() {
             #[cfg(feature = "defmt")]
             info!("processing request");
-            let response: ArrayVec<u8, 255> = request.iter().copied().map(rot13).collect();
+            let response: ArrayVec<u8, 255> =
+                request.iter().copied().map(pico_example::rot13).collect();
 
             not_webusb.send_response(response);
         }
     }
-}
-
-fn rot13(x: u8) -> u8 {
-    if ('A'..'N').contains(&(x as char)) {
-        x + 13
-    } else if ('N'..='Z').contains(&(x as char)) {
-        x - 13
-    } else if ('a'..'n').contains(&(x as char)) {
-        x + 13
-    } else if ('n'..='z').contains(&(x as char)) {
-        x - 13
-    } else {
-        x
-    }
-}
-
-fn enter_flash_mode() -> ! {
-    #[cfg(feature = "defmt")]
-    info!("entering flash mode");
-    reset_to_usb_boot(0, 0);
-    panic!()
 }
