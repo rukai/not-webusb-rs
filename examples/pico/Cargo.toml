@@ -35,6 +35,7 @@ defmt = [
     "usb-device/defmt",
     "usbd-human-interface-device/defmt"
 ]
+default = ["defmt"]
 
 [profile.dev]
 codegen-units = 1

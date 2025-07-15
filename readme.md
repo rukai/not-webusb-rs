@@ -21,7 +21,12 @@ It provides:
 
 ## Examples
 
-TODO
+With a debugger+pico connected, and [probe-rs](https://probe.rs/docs/getting-started/installation) installed, the examples can be run as:
+
+| Flash firmware  | Access Webpage | Description |
+| --------------- | -------------- | ----------- |
+|`cd examples/pico; cargo run --release --bin rot13` | `./serve.sh` | Demonstrates bidirectional communication with the device |
+|`cd examples/pico; cargo run --release --bin rot13_origin_filter` | [Github pages](https://rukai.github.io/not-webusb-rs) | Same as rot13 example but also demonstrates the web origin functionality |
 
 ## Features
 
@@ -36,4 +41,4 @@ Install system deps:
 sudo apt install ninja-build mercurial python-is-python3 g++-14 libudev-dev
 ```
 
-Flash the rot13 example firmware to a device and then run `cargo test`.
+Flash the rot13 example firmware to a pico and then run `cargo test`.
