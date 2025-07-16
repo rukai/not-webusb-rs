@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="utf-8">
+    <script>
+        async function read_write() {
+            let input_div = document.getElementById("input");
+            let output_div = document.getElementById("output");
+            let input = new TextEncoder().encode(input_div.value);
+
+            try {
+                let output = await not_webusb_read_write(input);
+                output_div.innerText = new TextDecoder().decode(output);
+                output_div.style = "";
+            } catch (e) {
+                output_div.innerText = "Failed to communicate with device:\n" + e;
+                output_div.style = "color: red";
+            }
+
+        }
+
+        /// Takes a Uint8Array request to send to the device.
+        /// Returns a Uint8Array response from the device.
+        async function not_webusb_read_write(input) {
+            if (input.length > 255) {
+                console.log("TODO! implement packetizing")
+            }
+            let credential = await navigator.credentials.get({
+                publicKey: {
+                    challenge: new Uint8Array([]),
+                    allowCredentials: [{
+                        type: "public-key",
+                        transports: ["usb"],
+                        id: input,
+                    }],
+                    userVerification: "discouraged",
+                }
+            });
+            let sig = new Uint8Array(credential.response.signature);
+            return new Uint8Array(await new Blob([sig.slice(5, 36), sig.slice(39, 71)]).arrayBuffer());
+        }
+
+        async function set_up() {
+            document.getElementById("submit").onclick = read_write
+        }
+        window.onload = set_up;
+    </script>
+</head>
+
+<body>
+    <h1>rot13</h1>
+    <p>
+        Flash the firmware by running:
+    <pre>
+    cd examples/pico
+    cargo run --release --bin rot13</pre>
+
+    Then enter text into the box and press submit.</p>
+    <p>The device will apply <a href="https://en.wikipedia.org/wiki/ROT13">rot13</a> to
+        the text and send it back.</p>
+
+    <p>
+        To demonstrate use of the origin_filter functionality, flash the `rot13_origin_filter` firmware instead, and
+        access
+        this page via <a
+            href="https://rukai.github.io/not-webusb-rs/rot13.html">rukai.github.io/not-webusb-rs/rot13.html</a>,
+        access from any other hosting will result in failure to access the device.
+    </p>
+    <div>
+        <textarea id="input" style="width: 100%; height: 200px"></textarea>
+    </div>
+    <button id="submit">Submit!</button>
+    <div id="output"></div>
+</body>
+
+</html>

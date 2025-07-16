@@ -21,12 +21,12 @@ It provides:
 
 ## Examples
 
-With a debugger+pico connected, and [probe-rs](https://probe.rs/docs/getting-started/installation) installed, the examples can be run as:
+With a debugger+pico connected, and [probe-rs](https://probe.rs/docs/getting-started/installation) installed, the examples can be run by one of:
 
-| Flash firmware  | Access Webpage | Description |
-| --------------- | -------------- | ----------- |
-|`cd examples/pico; cargo run --release --bin rot13` | `./serve.sh` | Demonstrates bidirectional communication with the device |
-|`cd examples/pico; cargo run --release --bin rot13_origin_filter` | [Github pages](https://rukai.github.io/not-webusb-rs) | Same as rot13 example but also demonstrates the web origin functionality |
+* visiting [Github pages](https://rukai.github.io/not-webusb-rs)
+* locally running `./serve.sh` and then navigating to [localhost:8000](localhost:8000)
+
+and then following the instructions on the page.
 
 ## Features
 

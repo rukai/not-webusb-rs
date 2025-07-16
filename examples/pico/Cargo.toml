@@ -33,7 +33,8 @@ defmt = [
     "not-webusb/defmt",
     "panic-probe/print-defmt",
     "usb-device/defmt",
-    "usbd-human-interface-device/defmt"
+    "usbd-human-interface-device/defmt",
+    "fugit/defmt"
 ]
 default = ["defmt"]
 
