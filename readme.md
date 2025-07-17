@@ -1,23 +1,57 @@
 # not-webUSB
 
-A port of [I Cant Believe Its Not WebUSB](https://github.com/ArcaneNibble/i-cant-believe-its-not-webusb) to rust.
-This crate allows for communication between specially programmed usb devices and websites without the use of webUSB.
-Instead it uses the browsers U2F functionality to send a payload to the device.
+An alternative to webUSB with better browser support and the ability to restrict which sites can access the device.
 
 The goal is to be a production ready library for use in real devices.
 However, while it works fine for simple use cases, it is not currently in a state where I would be comfortable deploying this in production.
 
-It provides:
+not-webusb consists of:
 
-* a [usb-device](https://github.com/rust-embedded-community/usb-device) class implementation that runs on your microcontroller
-* sample javascript code for talking to the microcontroller from a website. <!--(or a rust crate if your into wasm)-->
+* A [usb-device](https://github.com/rust-embedded-community/usb-device) class implementation that runs on your microcontroller
+* Client code for talking to the microcontroller from a website.
+  * [sample javascript code](web/not_webusb.js)
+  * Or, a rust crate for wasm clients (Not implemented yet)
 
-## TODO
+not-webusb is well suited for occasional one time operations like flashing configuration of a device. e.g. setting key mappings for a keyboard.
 
-* Implement packetization of user packets on top of fido (currently supports packet sizes of about 64 bytes)
-* Make protocol implementation more robust
-* Internal cleanup
-* provide wasm crate for interacting with not-webusb
+Constant live communication with a device is possible, but poorly suited. e.g. reading sensor data.
+
+## Browser support
+
+Unlike webusb which supports only chrome and edge.
+not-webusb supports all major browsers, having been tested on:
+
+* Firefox
+* Chrome Desktop
+* Chrome Mobile - TODO Fix
+* Edge - TODO test
+* Safari Desktop
+
+## Downsides
+
+Probably a fair bit slower compared to webusb, since it has to go through a lot of overhead with the U2F protocol.
+TODO: get some actual measurements done.
+
+Also, most browsers flash the entire window every time a not-webusb transfer occurs.
+However, on firefox only a small box appears instead.
+
+TODO: Example gif
+
+<!--
+## Development
+
+Here is a video explaining the development process behind not-webusb.
+
+[![youtube video](https://img.youtube.com/vi/9YmU7DN4t2M/0.jpg)](https://youtu.be/9YmU7DN4t2M)
+-->
+
+## How does it work though???
+
+not-webusb is built on top of [U2F](https://en.wikipedia.org/wiki/Universal_2nd_Factor) (the legacy part of [FIDO](https://en.wikipedia.org/wiki/FIDO_Alliance)) the protocol for security keys.
+However instead of implementing a security key, not-webusb smuggles data through the `application_parameter` and `signature` fields of the `Authenticate` messages sent between the browser and the device.
+This is a fundamental part of the protocol and cannot be removed by browsers without rendering large numbers of currently working security keys unusable.
+
+The idea comes from the [I Cant Believe Its Not WebUSB](https://github.com/ArcaneNibble/i-cant-believe-its-not-webusb) demo, which uses the same fields to control an LED from the browser.
 
 ## Examples
 
@@ -28,7 +62,7 @@ With a debugger+pico connected, and [probe-rs](https://probe.rs/docs/getting-sta
 
 and then following the instructions on the page.
 
-## Features
+## Cargo Features
 
 * `defmt` - enable defmt logging
 
@@ -42,3 +76,9 @@ sudo apt install ninja-build mercurial python-is-python3 g++-14 libudev-dev
 ```
 
 Flash the rot13 example firmware to a pico and then run `cargo test`.
+
+## TODO
+
+* Implement packetization of user packets on top of fido (currently supports packet sizes of about 64 bytes)
+* Make protocol implementation more robust
+* Internal cleanup
