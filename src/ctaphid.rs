@@ -61,9 +61,10 @@ impl InProgressMessage {
     pub fn send_user_response(
         &mut self,
         response: &[u8],
+        bytes_sent: &mut u32,
         tx: &mut Producer<MAXIMUM_CTAPHID_MESSAGE_X2>,
     ) {
-        send_user_response(response, tx);
+        send_user_response(response, bytes_sent, tx);
     }
 }
 

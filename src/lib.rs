@@ -4,6 +4,10 @@ pub mod ctaphid;
 pub(crate) mod fmt;
 pub mod u2f;
 
+use crate::ctaphid::{
+    ContinuationState, CtapHidError, CtapHidRequest, CtapHidRequestTy, CtapHidResponse,
+    CtapHidResponseTy, InProgressMessage, InitResponse,
+};
 use arrayvec::ArrayVec;
 use bbqueue::{BBBuffer, Consumer, Producer};
 use frunk::{HCons, HNil};
@@ -11,20 +15,26 @@ use usb_device::{UsbError, bus::UsbBus};
 use usbd_human_interface_device::device::fido::{RawFido, RawFidoReport};
 use usbd_human_interface_device::prelude::*;
 
-use crate::ctaphid::{
-    ContinuationState, CtapHidError, CtapHidRequest, CtapHidRequestTy, CtapHidResponse,
-    CtapHidResponseTy, InProgressMessage, InitResponse,
-};
-
 // as per FIDO CTAP spec maximum payload size is 7609 bytes
 const MAXIMUM_CTAPHID_MESSAGE: usize = 7609;
 const MAXIMUM_CTAPHID_MESSAGE_X2: usize = MAXIMUM_CTAPHID_MESSAGE * 2;
 
 // Only contains data for one message at a time.
 // The reader can determine the total length of the message as the initial size of the buffer before it is partially sent.
-// Needs the double the number of ctaphid message max bytes since the bytes might be marked as used.
+// Needs the double the number of CTAPHID message max bytes since the bytes might be marked as used.
 // TODO: consider a better type than BBBuffer for this purpose.
 static OUTGOING_MESSAGE_BYTES: BBBuffer<MAXIMUM_CTAPHID_MESSAGE_X2> = BBBuffer::new();
+
+enum UserDataState {
+    //ReceivingRequest(ArrayVec<u8, 255>),
+    ReceivedRequest(ArrayVec<u8, 255>),
+    SendingResponse {
+        data: ArrayVec<u8, 255>,
+        bytes_sent: u32,
+        pending_request: bool,
+    },
+    None,
+}
 
 pub struct NotWebUsb<'a, UsbBusT: UsbBus> {
     cid_next: i32,
@@ -34,10 +44,7 @@ pub struct NotWebUsb<'a, UsbBusT: UsbBus> {
     raw_response: RawFidoReport,
     fido: UsbHidClass<'a, UsbBusT, HCons<RawFido<'a, UsbBusT>, HNil>>,
     web_origin_filter: &'a dyn Fn([u8; 32]) -> bool,
-
-    /// User fields
-    request: Option<ArrayVec<u8, 255>>,
-    response: Option<ArrayVec<u8, 255>>,
+    user_data: UserDataState,
 }
 
 impl<'a, UsbBusT: UsbBus> NotWebUsb<'a, UsbBusT> {
@@ -46,14 +53,14 @@ impl<'a, UsbBusT: UsbBus> NotWebUsb<'a, UsbBusT> {
     /// ## web_origin_filter
     /// The `web_origin_filter` is used to limit the websites that can talk to your device.
     /// The `web_origin_filter` function is called once for every request, if `web_origin_filter` returns true the request is passed on to the user, otherwise the request is dropped.
-    /// If you dont care care about limiting the websites that can talk to your device, simply use `&|_| true` as the web_origin_filter to accept all requests, otherwise read on.
+    /// If you don't care care about limiting the websites that can talk to your device, simply use `&|_| true` as the web_origin_filter to accept all requests, otherwise read on.
     ///
     /// The argument passed to the `web_origin_filter is the sha256 hash of the domain name.
     /// This could be calculated by e.g. `echo -n "example.com" | sha256 | od -t u1
     /// The web application can slightly alter the domain used via the webauth [rpId field](https://developer.mozilla.org/en-US/docs/Web/API/PublicKeyCredentialRequestOptions#rpid)
     /// Browsers will only allow this field to reduce scope e.g. `example.com` -> `sub.example.com`
     /// And browsers entirely forbid use of U2F from `http://` websites, `https://`` is required.
-    /// This gives us a gaurantee that the website the device is talking to is the real website at the hashed domain.
+    /// This gives us a guarantee that the website the device is talking to is the real website at the hashed domain.
     ///
     /// Internally NotWebusb uses the `application_parameter` field of the U2F authenticate request as the argument to `web_origin_filter`.
     pub fn new(
@@ -69,8 +76,7 @@ impl<'a, UsbBusT: UsbBus> NotWebUsb<'a, UsbBusT> {
             in_progress_message_option: None,
             raw_response: RawFidoReport::default(),
             web_origin_filter,
-            request: None,
-            response: None,
+            user_data: UserDataState::None,
         }
     }
 
@@ -118,12 +124,29 @@ impl<'a, UsbBusT: UsbBus> NotWebUsb<'a, UsbBusT> {
                                 &mut self.tx,
                                 &self.web_origin_filter,
                             ) {
-                                if self.request.is_some() {
-                                    panic!(
-                                        "TODO: handle case where request received when already have one"
-                                    )
+                                match &mut self.user_data {
+                                    UserDataState::ReceivedRequest(_) => {
+                                        panic!(
+                                            "TODO: handle case where request received when already have one"
+                                        )
+                                    }
+                                    UserDataState::SendingResponse {
+                                        pending_request, ..
+                                    } => {
+                                        // TODO: the none case is not sufficient to mark this as true
+                                        if request[0] == 1 {
+                                            *pending_request = true;
+                                        } else {
+                                            panic!(
+                                                "TODO: handle protocol violation where request is sent without correct header value"
+                                            )
+                                        }
+                                    }
+                                    UserDataState::None => {
+                                        // start a new transaction
+                                        self.user_data = UserDataState::ReceivedRequest(request);
+                                    }
                                 }
-                                self.request = Some(request)
                             }
                         }
                         None
@@ -136,12 +159,30 @@ impl<'a, UsbBusT: UsbBus> NotWebUsb<'a, UsbBusT> {
                                     &mut self.tx,
                                     &self.web_origin_filter,
                                 ) {
-                                    if self.request.is_some() {
-                                        panic!(
-                                            "TODO: handle case where request received when already have one 2"
-                                        )
+                                    match &mut self.user_data {
+                                        UserDataState::ReceivedRequest(_) => {
+                                            panic!(
+                                                "TODO: handle case where request received when already have one"
+                                            )
+                                        }
+                                        UserDataState::SendingResponse {
+                                            pending_request, ..
+                                        } => {
+                                            // TODO: the none case is not sufficient to mark this as true
+                                            if request[0] == 1 {
+                                                *pending_request = true;
+                                            } else {
+                                                panic!(
+                                                    "TODO: handle protocol violation where request is sent without correct header value"
+                                                )
+                                            }
+                                        }
+                                        UserDataState::None => {
+                                            // start a new transaction
+                                            self.user_data =
+                                                UserDataState::ReceivedRequest(request);
+                                        }
                                     }
-                                    self.request = Some(request)
                                 }
                             } else {
                                 // TODO: error or maybe just drop it
@@ -190,8 +231,21 @@ impl<'a, UsbBusT: UsbBus> NotWebUsb<'a, UsbBusT> {
         }
 
         if let Some(in_progress_message) = &mut self.in_progress_message_option {
-            if let Some(user_response) = self.response.take() {
-                in_progress_message.send_user_response(&user_response, &mut self.tx);
+            if let UserDataState::SendingResponse {
+                data,
+                bytes_sent,
+                pending_request,
+            } = &mut self.user_data
+            {
+                // TODO: only send when we have a request we can reply to
+                if *pending_request {
+                    in_progress_message.send_user_response(data, bytes_sent, &mut self.tx);
+                    *pending_request = false;
+                }
+
+                if *bytes_sent >= data.len() as u32 {
+                    self.user_data = UserDataState::None;
+                }
             }
 
             // USB may have been blocked, leading to a response already being created but left unsent.
@@ -279,13 +333,23 @@ impl<'a, UsbBusT: UsbBus> NotWebUsb<'a, UsbBusT> {
     /// Returns the current request if there is one.
     /// Calling this does not consume the request.
     pub fn check_pending_request(&self) -> Option<&[u8]> {
-        self.request.as_ref().map(|x| x.as_slice())
+        if let UserDataState::ReceivedRequest(request) = &self.user_data {
+            Some(request.as_slice())
+        } else {
+            None
+        }
     }
 
     /// Sends a response to the currently pending request.
     /// Calling this consumes the request.
     pub fn send_response(&mut self, message: ArrayVec<u8, 255>) {
-        self.response = Some(message);
-        self.request = None;
+        if !matches!(self.user_data, UserDataState::ReceivedRequest(_)) {
+            panic!("Cannot call NotWebusb::send_response until a request has been received.");
+        }
+        self.user_data = UserDataState::SendingResponse {
+            data: message,
+            bytes_sent: 0,
+            pending_request: true,
+        }
     }
 }

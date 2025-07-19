@@ -82,11 +82,14 @@ pub fn receive_user_request(
     None
 }
 
-pub fn send_user_response(response: &[u8], tx: &mut Producer<MAXIMUM_CTAPHID_MESSAGE_X2>) {
+// TODO: pull header bytes out into lib.rs level logic
+pub fn send_user_response(
+    response: &[u8],
+    payload_written_bytes: &mut u32,
+    tx: &mut Producer<MAXIMUM_CTAPHID_MESSAGE_X2>,
+) {
     // the signature contains two asn.1 integers that we can smuggle data in.
     // They must be exactly 20 bytes each and must never be > 0, since they are signed integers this means starting with 0x7f
-
-    let mut payload_written_bytes = 0;
 
     let mut signature: ArrayVec<u8, 255> = [
         0x30, // ASN.1 sequence
@@ -99,15 +102,35 @@ pub fn send_user_response(response: &[u8], tx: &mut Producer<MAXIMUM_CTAPHID_MES
     .collect();
 
     // must write exactly 0x1f bytes to signature
-    let payload_bytes_to_write = (response.len() - payload_written_bytes).min(0x1f);
-    signature.extend(
-        response[payload_written_bytes..payload_written_bytes + payload_bytes_to_write]
-            .iter()
-            .copied()
-            .chain(iter::repeat(0))
-            .take(0x1f),
-    );
-    payload_written_bytes += payload_bytes_to_write;
+
+    if *payload_written_bytes == 0 {
+        let payload_bytes_to_write = (response.len() as u32 - *payload_written_bytes).min(0x1b);
+        signature.extend(
+            ((response.len() as u32).to_be_bytes())
+                .iter()
+                .copied()
+                .chain(
+                    response[*payload_written_bytes as usize
+                        ..*payload_written_bytes as usize + payload_bytes_to_write as usize]
+                        .iter()
+                        .copied(),
+                )
+                .chain(iter::repeat(0))
+                .take(0x1f),
+        );
+        *payload_written_bytes += payload_bytes_to_write;
+    } else {
+        let payload_bytes_to_write = (response.len() as u32 - *payload_written_bytes).min(0x1f);
+        signature.extend(
+            response[*payload_written_bytes as usize
+                ..*payload_written_bytes as usize + payload_bytes_to_write as usize]
+                .iter()
+                .copied()
+                .chain(iter::repeat(0))
+                .take(0x1f),
+        );
+        *payload_written_bytes += payload_bytes_to_write;
+    }
 
     signature.extend([
         0x02, // ASN.1 integer
@@ -115,16 +138,17 @@ pub fn send_user_response(response: &[u8], tx: &mut Producer<MAXIMUM_CTAPHID_MES
         0x7f, // first byte of 0x7f is used to force the signed integer to be positive for chrome compatibility
     ]);
 
-    let payload_bytes_to_write = (response.len() - payload_written_bytes).min(0x1f);
+    let payload_bytes_to_write = (response.len() as u32 - *payload_written_bytes).min(0x1f);
     // must write exactly 0x1f bytes to signature
     signature.extend(
-        response[payload_written_bytes..payload_written_bytes + payload_bytes_to_write]
+        response[*payload_written_bytes as usize
+            ..*payload_written_bytes as usize + payload_bytes_to_write as usize]
             .iter()
             .copied()
             .chain(iter::repeat(0))
             .take(0x1f),
     );
-    payload_written_bytes += payload_bytes_to_write;
+    *payload_written_bytes += payload_bytes_to_write;
 
     info!("payload_written_bytes {}", payload_written_bytes);
     info!("signature {}", signature.as_slice());
@@ -144,6 +168,7 @@ pub fn send_user_response(response: &[u8], tx: &mut Producer<MAXIMUM_CTAPHID_MES
 
 #[allow(clippy::large_enum_variant)]
 pub enum U2fRequest {
+    // TODO: remove register logic
     Register {
         challenge_parameter: [u8; 32],
         application_parameter: [u8; 32],
@@ -224,6 +249,7 @@ impl AuthenticateControl {
 
 #[allow(clippy::large_enum_variant)]
 pub enum U2fResponse {
+    // TODO: remove register logic
     Register {
         user_public_key: [u8; 65],
         key_handle: ArrayVec<u8, 255>,

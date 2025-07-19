@@ -17,6 +17,7 @@
             } catch (e) {
                 output_div.innerText = "Failed to communicate with device:\n" + e;
                 output_div.style = "color: red";
+                throw e;
             }
         }
 
