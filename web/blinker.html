@@ -14,9 +14,14 @@
             try {
                 await not_webusb_read_write(input);
             } catch (e) {
-                output_div.innerText = "Failed to communicate with device:\n" + e;
-                output_div.style = "color: red";
-                throw e;
+                // In use exceptions are common since we call this so frequently.
+                // Failing to write to the device is fine, so just drop these errors.
+                // Other errors should be logged and rethrown.
+                if (!(e instanceof NotWebusbInUseException)) {
+                    output_div.innerText = "Failed to communicate with device:\n" + e;
+                    output_div.style = "color: red";
+                    throw e;
+                }
             }
         }
 

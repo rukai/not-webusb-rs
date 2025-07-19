@@ -17,7 +17,7 @@ async function not_webusb_read_write(input) {
     if (_not_webusb_internal_lock) {
         // TODO: device error should clear internal lock
         // TODO: unique error type?
-        throw new Error("not_webusb_read_write was called while another not_webusb_read_write was in progress")
+        throw new NotWebusbInUseException()
     }
     _not_webusb_internal_lock = true;
 
@@ -43,7 +43,6 @@ async function not_webusb_read_write(input) {
         sig.slice(9, Math.min(36, 9 + size)),
         sig.slice(39, Math.min(71, 39 + (size - 27)))
     ]);
-    console.log("size: " + size);
     size -= 58;
 
     // final response packets
@@ -62,7 +61,6 @@ async function not_webusb_read_write(input) {
 /// Takes a Uint8array request of length 0..255
 /// Returns a Uint8Array of the raw response, it must be further processed to retrieve user response data.
 async function _not_webusb_read_write(input) {
-    console.log("read_write input: " + input);
     let credential = await navigator.credentials.get({
         publicKey: {
             challenge: new Uint8Array([]),
@@ -74,6 +72,12 @@ async function _not_webusb_read_write(input) {
             userVerification: "discouraged",
         }
     });
-    console.log("read_write output: " + credential.response.signature);
     return new Uint8Array(credential.response.signature);
+}
+
+class NotWebusbInUseException extends Error {
+    constructor() {
+        super("not_webusb_read_write was called while another not_webusb_read_write was in progress");
+        this.name = this.constructor.name;
+    }
 }
