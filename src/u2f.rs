@@ -14,13 +14,6 @@ pub fn receive_user_request(
 
     //info!("received u2f request {:?}", request); // TODO: ArrayVec defmt support?
     match &request {
-        U2fRequest::Register {
-            challenge_parameter,
-            application_parameter,
-        } => info!(
-            "received u2f request: register challenge_parameter={} application_parameter={}",
-            challenge_parameter, application_parameter
-        ),
         U2fRequest::Authenticate {
             control,
             challenge_parameter,
@@ -40,13 +33,6 @@ pub fn receive_user_request(
     }
 
     let response = match request {
-        U2fRequest::Register { .. } => U2fResponse::Register {
-            // TODO: set real values
-            user_public_key: [0; 65],
-            key_handle: ArrayVec::new(),
-            attestation_certificate: [0; 255],
-            signature: [0; 73],
-        },
         U2fRequest::Authenticate {
             key_handle,
             control,
@@ -168,11 +154,6 @@ pub fn send_user_response(
 
 #[allow(clippy::large_enum_variant)]
 pub enum U2fRequest {
-    // TODO: remove register logic
-    Register {
-        challenge_parameter: [u8; 32],
-        application_parameter: [u8; 32],
-    },
     Authenticate {
         control: AuthenticateControl,
         challenge_parameter: [u8; 32],
@@ -204,10 +185,6 @@ impl U2fRequest {
         let body = &message_data[data_start..data_start + length as usize];
 
         match ins {
-            0x01 => U2fRequest::Register {
-                challenge_parameter: body[0..32].try_into().unwrap(),
-                application_parameter: body[32..64].try_into().unwrap(),
-            },
             0x02 => {
                 let key_handle_length = body[64];
                 let mut key_handle = [0; 255];
@@ -249,13 +226,6 @@ impl AuthenticateControl {
 
 #[allow(clippy::large_enum_variant)]
 pub enum U2fResponse {
-    // TODO: remove register logic
-    Register {
-        user_public_key: [u8; 65],
-        key_handle: ArrayVec<u8, 255>,
-        attestation_certificate: [u8; 255], // TODO: There seems to be no maximum length, not sure what to do here.
-        signature: [u8; 73],
-    },
     Authenticate {
         user_presence: bool,
         counter: u32,
@@ -270,26 +240,6 @@ impl U2fResponse {
     fn encode(&self, data: &mut [u8]) -> usize {
         info!("Sending response");
         match self {
-            U2fResponse::Register {
-                user_public_key,
-                key_handle,
-                attestation_certificate,
-                signature,
-            } => {
-                data[0] = 5;
-                data[1..66].copy_from_slice(user_public_key);
-                data[66] = key_handle.len() as u8; // TODO: shift along next fields based on length
-                data[67..67 + key_handle.len()].copy_from_slice(key_handle);
-                data[322..577].copy_from_slice(attestation_certificate);
-                data[577..650].copy_from_slice(signature);
-
-                // success
-                data[651] = 0x90;
-                data[652] = 0x00;
-
-                // TODO: dynamically derive
-                653
-            }
             U2fResponse::Authenticate {
                 user_presence,
                 counter,
