@@ -10,6 +10,9 @@ async function not_webusb_read_write(input) {
             + (array[offset + 2] << 8)
             + (array[offset + 3]);
     }
+    async function concat_uint8array(arrays) {
+        return new Uint8Array(await new Blob(arrays).arrayBuffer());
+    }
 
     if (_not_webusb_internal_lock) {
         // TODO: device error should clear internal lock
@@ -19,28 +22,34 @@ async function not_webusb_read_write(input) {
     _not_webusb_internal_lock = true;
 
     var total_size = input.length + 4;
-    var number_of_packets = Math.ceil(total_size / 255);
+    var number_of_packets = Math.ceil(total_size / 254);
     console.log("number_of_packets: " + number_of_packets);
 
     // initial request packets
     for (var i = 0; i < number_of_packets - 1; i++) {
-        var sig = await _not_webusb_read_write(input.slice(i * 255, (i + 1) * 255));
+        var sig = await _not_webusb_read_write(await concat_uint8array([
+            new Uint8Array([0]),
+            input.slice(i * 254, (i + 1) * 254)
+        ]));
     }
 
     // final request packet + initial response packet
-    var sig = await _not_webusb_read_write(input.slice((number_of_packets - 1) * 255));
+    var sig = await _not_webusb_read_write(await concat_uint8array([
+        new Uint8Array([2]),
+        input.slice((number_of_packets - 1) * 254)
+    ]));
     var size = toU32(sig, 5);
-    var response = new Uint8Array(await new Blob([
+    var response = await concat_uint8array([
         sig.slice(9, Math.min(36, 9 + size)),
         sig.slice(39, Math.min(71, 39 + (size - 27)))
-    ]).arrayBuffer());
+    ]);
     console.log("size: " + size);
     size -= 58;
 
     // final response packets
     while (size > 0) {
         var sig = await _not_webusb_read_write(new Uint8Array([1]));
-        response = new Uint8Array(await new Blob([response, sig.slice(5, 36), sig.slice(39, 71)]).arrayBuffer());
+        response = await concat_uint8array([response, sig.slice(5, 36), sig.slice(39, 71)]);
         size -= 62;
     }
 
@@ -53,7 +62,7 @@ async function not_webusb_read_write(input) {
 /// Takes a Uint8array request of length 0..255
 /// Returns a Uint8Array of the raw response, it must be further processed to retrieve user response data.
 async function _not_webusb_read_write(input) {
-    console.log("read_write")
+    console.log("read_write input: " + input);
     let credential = await navigator.credentials.get({
         publicKey: {
             challenge: new Uint8Array([]),
@@ -65,5 +74,6 @@ async function _not_webusb_read_write(input) {
             userVerification: "discouraged",
         }
     });
+    console.log("read_write output: " + credential.response.signature);
     return new Uint8Array(credential.response.signature);
 }

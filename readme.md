@@ -77,8 +77,8 @@ sudo apt install ninja-build mercurial python-is-python3 g++-14 libudev-dev
 
 Flash the rot13 example firmware to a pico and then run `cargo test`.
 
-## TODO
+## Future work
 
-* Implement packetization of user packets on top of fido (currently supports packet sizes of about 64 bytes)
 * Make protocol implementation more robust
 * Internal cleanup
+* I would love for this project to have a recommended webusb implementation of the fido client protocol, allowing browsers with webusb support to avoid the "touch your security key" pop ups, while keeping fido as a fallback protocol. I have no immediate plans to implement this however.

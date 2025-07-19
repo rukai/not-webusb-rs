@@ -77,7 +77,7 @@ fn main() -> ! {
     flash_led.start(100.millis());
     let mut led_state = false;
 
-    let mut not_webusb = NotWebUsb::new(fido, &|_| true);
+    let mut not_webusb = NotWebUsb::<_, 10000>::new(fido, &|_| true);
 
     #[cfg(feature = "defmt")]
     info!("begin main loop");
@@ -100,7 +100,7 @@ fn main() -> ! {
         if let Some(request) = not_webusb.check_pending_request() {
             #[cfg(feature = "defmt")]
             info!("processing request");
-            let response: ArrayVec<u8, 255> =
+            let response: ArrayVec<u8, 10000> =
                 request.iter().copied().map(pico_example::rot13).collect();
 
             not_webusb.send_response(response);

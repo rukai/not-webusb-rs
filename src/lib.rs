@@ -25,18 +25,7 @@ const MAXIMUM_CTAPHID_MESSAGE_X2: usize = MAXIMUM_CTAPHID_MESSAGE * 2;
 // TODO: consider a better type than BBBuffer for this purpose.
 static OUTGOING_MESSAGE_BYTES: BBBuffer<MAXIMUM_CTAPHID_MESSAGE_X2> = BBBuffer::new();
 
-enum UserDataState {
-    //ReceivingRequest(ArrayVec<u8, 255>),
-    ReceivedRequest(ArrayVec<u8, 255>),
-    SendingResponse {
-        data: ArrayVec<u8, 255>,
-        bytes_sent: u32,
-        pending_request: bool,
-    },
-    None,
-}
-
-pub struct NotWebUsb<'a, UsbBusT: UsbBus> {
+pub struct NotWebUsb<'a, UsbBusT: UsbBus, const MAX_MESSAGE_LEN: usize = 1024> {
     cid_next: i32,
     in_progress_message_option: Option<InProgressMessage>,
     tx: Producer<'a, MAXIMUM_CTAPHID_MESSAGE_X2>,
@@ -44,10 +33,10 @@ pub struct NotWebUsb<'a, UsbBusT: UsbBus> {
     raw_response: RawFidoReport,
     fido: UsbHidClass<'a, UsbBusT, HCons<RawFido<'a, UsbBusT>, HNil>>,
     web_origin_filter: &'a dyn Fn([u8; 32]) -> bool,
-    user_data: UserDataState,
+    user_data: UserDataState<MAX_MESSAGE_LEN>,
 }
 
-impl<'a, UsbBusT: UsbBus> NotWebUsb<'a, UsbBusT> {
+impl<'a, UsbBusT: UsbBus, const MAX_MESSAGE_LEN: usize> NotWebUsb<'a, UsbBusT, MAX_MESSAGE_LEN> {
     /// Create a new NotWebusb instance.
     ///
     /// ## web_origin_filter
@@ -124,29 +113,11 @@ impl<'a, UsbBusT: UsbBus> NotWebUsb<'a, UsbBusT> {
                                 &mut self.tx,
                                 &self.web_origin_filter,
                             ) {
-                                match &mut self.user_data {
-                                    UserDataState::ReceivedRequest(_) => {
-                                        panic!(
-                                            "TODO: handle case where request received when already have one"
-                                        )
-                                    }
-                                    UserDataState::SendingResponse {
-                                        pending_request, ..
-                                    } => {
-                                        // TODO: the none case is not sufficient to mark this as true
-                                        if request[0] == 1 {
-                                            *pending_request = true;
-                                        } else {
-                                            panic!(
-                                                "TODO: handle protocol violation where request is sent without correct header value"
-                                            )
-                                        }
-                                    }
-                                    UserDataState::None => {
-                                        // start a new transaction
-                                        self.user_data = UserDataState::ReceivedRequest(request);
-                                    }
-                                }
+                                self.user_data.receive_request(
+                                    request,
+                                    in_progress_message,
+                                    &mut self.tx,
+                                );
                             }
                         }
                         None
@@ -159,30 +130,11 @@ impl<'a, UsbBusT: UsbBus> NotWebUsb<'a, UsbBusT> {
                                     &mut self.tx,
                                     &self.web_origin_filter,
                                 ) {
-                                    match &mut self.user_data {
-                                        UserDataState::ReceivedRequest(_) => {
-                                            panic!(
-                                                "TODO: handle case where request received when already have one"
-                                            )
-                                        }
-                                        UserDataState::SendingResponse {
-                                            pending_request, ..
-                                        } => {
-                                            // TODO: the none case is not sufficient to mark this as true
-                                            if request[0] == 1 {
-                                                *pending_request = true;
-                                            } else {
-                                                panic!(
-                                                    "TODO: handle protocol violation where request is sent without correct header value"
-                                                )
-                                            }
-                                        }
-                                        UserDataState::None => {
-                                            // start a new transaction
-                                            self.user_data =
-                                                UserDataState::ReceivedRequest(request);
-                                        }
-                                    }
+                                    self.user_data.receive_request(
+                                        request,
+                                        in_progress_message,
+                                        &mut self.tx,
+                                    );
                                 }
                             } else {
                                 // TODO: error or maybe just drop it
@@ -237,7 +189,6 @@ impl<'a, UsbBusT: UsbBus> NotWebUsb<'a, UsbBusT> {
                 pending_request,
             } = &mut self.user_data
             {
-                // TODO: only send when we have a request we can reply to
                 if *pending_request {
                     in_progress_message.send_user_response(data, bytes_sent, &mut self.tx);
                     *pending_request = false;
@@ -342,7 +293,7 @@ impl<'a, UsbBusT: UsbBus> NotWebUsb<'a, UsbBusT> {
 
     /// Sends a response to the currently pending request.
     /// Calling this consumes the request.
-    pub fn send_response(&mut self, message: ArrayVec<u8, 255>) {
+    pub fn send_response(&mut self, message: ArrayVec<u8, MAX_MESSAGE_LEN>) {
         if !matches!(self.user_data, UserDataState::ReceivedRequest(_)) {
             panic!("Cannot call NotWebusb::send_response until a request has been received.");
         }
@@ -350,6 +301,110 @@ impl<'a, UsbBusT: UsbBus> NotWebUsb<'a, UsbBusT> {
             data: message,
             bytes_sent: 0,
             pending_request: true,
+        }
+    }
+}
+
+enum UserDataState<const MAX_MESSAGE_LEN: usize> {
+    ReceivingRequest(ArrayVec<u8, MAX_MESSAGE_LEN>),
+    /// The entire request has been received from the client
+    /// The device may or may not have looked at it yet.
+    ReceivedRequest(ArrayVec<u8, MAX_MESSAGE_LEN>),
+    /// The entire response has been sent by the device.
+    /// The client may have partially received it but has not fully received it.
+    SendingResponse {
+        data: ArrayVec<u8, MAX_MESSAGE_LEN>,
+        bytes_sent: u32,
+        pending_request: bool,
+    },
+    /// There are no in progress requests or responses.
+    None,
+}
+
+impl<'a, const MAX_MESSAGE_LEN: usize> UserDataState<MAX_MESSAGE_LEN> {
+    fn receive_request(
+        &mut self,
+        request: ArrayVec<u8, 255>,
+        in_progress_message: &mut InProgressMessage,
+        tx: &mut Producer<'a, MAXIMUM_CTAPHID_MESSAGE_X2>,
+    ) {
+        match self {
+            UserDataState::ReceivingRequest(partial_request) => {
+                info!("UserDataState::ReceivingRequest");
+                let header = RequestHeader::parse(request[0]);
+                partial_request.extend(request.as_slice()[1..].iter().copied());
+                match header {
+                    RequestHeader::FinalRequest => {
+                        *self = UserDataState::ReceivedRequest({
+                            let mut v = ArrayVec::new();
+                            v.extend(partial_request.as_slice().iter().copied());
+                            v
+                        });
+                    }
+                    RequestHeader::InitialRequest => {
+                        in_progress_message.send_user_response(&[], &mut 0, tx);
+                    }
+                    RequestHeader::NeedMoreResponseData => panic!("unexpected request header"),
+                }
+            }
+            UserDataState::ReceivedRequest(_) => {
+                panic!("TODO: handle case where request received when already have one")
+            }
+            UserDataState::SendingResponse {
+                pending_request, ..
+            } => match RequestHeader::parse(request[0]) {
+                RequestHeader::NeedMoreResponseData => {
+                    *pending_request = true;
+                }
+                _ => panic!(
+                    "TODO: handle protocol violation where request is sent without correct header value"
+                ),
+            },
+            UserDataState::None => {
+                // start a new transaction
+                info!("UserDataState::None");
+                match RequestHeader::parse(request[0]) {
+                    RequestHeader::FinalRequest => {
+                        info!("starting new request - final request packet");
+                        *self = UserDataState::ReceivedRequest({
+                            let mut v = ArrayVec::new();
+                            v.extend(request.as_slice()[1..].iter().copied());
+                            v
+                        });
+                    }
+                    RequestHeader::InitialRequest => {
+                        info!("send_user_response from None");
+                        in_progress_message.send_user_response(&[], &mut 0, tx);
+                        *self = UserDataState::ReceivingRequest({
+                            let mut v = ArrayVec::new();
+                            v.extend(request.as_slice()[1..].iter().copied());
+                            v
+                        });
+                        info!("send_user_response from None 2");
+                    }
+                    RequestHeader::NeedMoreResponseData => {
+                        panic!("TODO: unexpected request header")
+                    }
+                }
+            }
+        }
+    }
+}
+
+//#[derive(defmt::Format)]
+enum RequestHeader {
+    InitialRequest = 0,
+    FinalRequest = 2,
+    NeedMoreResponseData = 1,
+}
+
+impl RequestHeader {
+    fn parse(byte: u8) -> Self {
+        match byte {
+            0 => Self::InitialRequest,
+            1 => Self::NeedMoreResponseData,
+            2 => Self::FinalRequest,
+            _ => panic!("Unknown request header"), // TODO: error handling
         }
     }
 }

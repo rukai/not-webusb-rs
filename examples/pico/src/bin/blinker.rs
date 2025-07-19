@@ -79,7 +79,7 @@ fn main() -> ! {
     let mut flash_interval_ms = 1000;
     let mut flash_passed_ms = 0;
 
-    let mut not_webusb = NotWebUsb::new(fido, &|_| true);
+    let mut not_webusb = NotWebUsb::<_, 1024>::new(fido, &|_| true);
 
     #[cfg(feature = "defmt")]
     info!("begin main loop");

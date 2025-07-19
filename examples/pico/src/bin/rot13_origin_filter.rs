@@ -86,7 +86,8 @@ fn main() -> ! {
         167, 78, 170, 168, 131, 115, 65, 251, 76, 71, 75, 154, 114,
     ];
 
-    let mut not_webusb = NotWebUsb::new(fido, &|origin_hash| origin_hash == GITHUB_ORIGIN_HASH);
+    let mut not_webusb =
+        NotWebUsb::<_, 10000>::new(fido, &|origin_hash| origin_hash == GITHUB_ORIGIN_HASH);
 
     #[cfg(feature = "defmt")]
     info!("begin main loop");
@@ -107,7 +108,7 @@ fn main() -> ! {
         if let Some(request) = not_webusb.check_pending_request() {
             #[cfg(feature = "defmt")]
             info!("processing request");
-            let response: ArrayVec<u8, 255> =
+            let response: ArrayVec<u8, 10000> =
                 request.iter().copied().map(pico_example::rot13).collect();
 
             not_webusb.send_response(response);

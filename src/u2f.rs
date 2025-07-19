@@ -87,10 +87,9 @@ pub fn send_user_response(
     .into_iter()
     .collect();
 
-    // must write exactly 0x1f bytes to signature
-
     if *payload_written_bytes == 0 {
         let payload_bytes_to_write = (response.len() as u32 - *payload_written_bytes).min(0x1b);
+        // must write exactly 0x1f bytes to signature
         signature.extend(
             ((response.len() as u32).to_be_bytes())
                 .iter()
@@ -107,6 +106,7 @@ pub fn send_user_response(
         *payload_written_bytes += payload_bytes_to_write;
     } else {
         let payload_bytes_to_write = (response.len() as u32 - *payload_written_bytes).min(0x1f);
+        // must write exactly 0x1f bytes to signature
         signature.extend(
             response[*payload_written_bytes as usize
                 ..*payload_written_bytes as usize + payload_bytes_to_write as usize]
