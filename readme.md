@@ -21,9 +21,8 @@ Constant live communication with a device is possible, but poorly suited. e.g. r
 Unlike webusb which supports only chrome and edge.
 not-webusb supports all major browsers, having been tested on:
 
-* Firefox
-* Chrome Desktop
-* Chrome Mobile - TODO Fix
+* Firefox Desktop + Android
+* Chrome Desktop + Android
 * Edge - TODO test
 * Safari Desktop
 

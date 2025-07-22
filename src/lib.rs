@@ -80,10 +80,11 @@ impl<'a, UsbBusT: UsbBus, const MAX_MESSAGE_LEN: usize> NotWebUsb<'a, UsbBusT, M
     pub fn poll(&mut self) {
         match self.fido.device().read_report() {
             Err(UsbError::WouldBlock) => {
-                //do nothing
+                // do nothing
             }
             Err(e) => {
-                panic!("Failed to read fido report: {:?}", e)
+                // We failed to read this request, log and continue on, hopefully its recoverable.
+                error!("Failed to read fido report: {:?}", e)
             }
             Ok(report) => {
                 let request = CtapHidRequest::parse(&report);
@@ -220,7 +221,6 @@ impl<'a, UsbBusT: UsbBus, const MAX_MESSAGE_LEN: usize> NotWebUsb<'a, UsbBusT, M
                 match self.rx.read() {
                     Ok(granted) => {
                         let remaining_u2f_size = granted.len();
-                        info!("remaining_u2f_size {}", remaining_u2f_size);
                         let packet_size = if let ContinuationState::Initial =
                             in_progress_transaction.response_continuation_state
                         {
@@ -228,7 +228,6 @@ impl<'a, UsbBusT: UsbBus, const MAX_MESSAGE_LEN: usize> NotWebUsb<'a, UsbBusT, M
                         } else {
                             remaining_u2f_size.min(59)
                         };
-                        info!("packet_size {}", packet_size);
                         in_progress_transaction.response_final_packet_is_ready_to_send =
                             remaining_u2f_size == packet_size;
                         CtapHidResponse {
@@ -242,7 +241,7 @@ impl<'a, UsbBusT: UsbBus, const MAX_MESSAGE_LEN: usize> NotWebUsb<'a, UsbBusT, M
                         }
                         .encode(&mut self.raw_response);
                         info!(
-                            "sending prepared raw response {}",
+                            "one ctaphid response packet has been prepared {}",
                             &self.raw_response.packet
                         );
 
@@ -286,7 +285,7 @@ impl<'a, UsbBusT: UsbBus, const MAX_MESSAGE_LEN: usize> NotWebUsb<'a, UsbBusT, M
                             info!("all packets for the in progress message have been sent");
                             self.in_progress_transaction_option = None;
                         } else {
-                            info!("one packet was sent, but more remain to be sent");
+                            info!("one ctaphid packet was sent, but more remain to be sent");
                         }
                     }
                     Err(e) => {
@@ -321,9 +320,12 @@ impl<'a, UsbBusT: UsbBus, const MAX_MESSAGE_LEN: usize> NotWebUsb<'a, UsbBusT, M
     }
 }
 
+/// Represents the state of any in progress user requests or responses.
 enum UserDataState<const MAX_MESSAGE_LEN: usize> {
+    /// The request has been partially received from the client.
+    /// The device has not looked at any of it yet.
     ReceivingRequest(ArrayVec<u8, MAX_MESSAGE_LEN>),
-    /// The entire request has been received from the client
+    /// The entire request has been received from the client.
     /// The device may or may not have looked at it yet.
     ReceivedRequest(ArrayVec<u8, MAX_MESSAGE_LEN>),
     /// The entire response has been sent by the device.
@@ -389,14 +391,12 @@ impl<'a, const MAX_MESSAGE_LEN: usize> UserDataState<MAX_MESSAGE_LEN> {
                         });
                     }
                     RequestHeader::InitialRequest => {
-                        info!("send_user_response from None");
                         in_progress_message.send_user_response(&[], &mut 0, tx);
                         *self = UserDataState::ReceivingRequest({
                             let mut v = ArrayVec::new();
                             v.extend(request.as_slice()[1..].iter().copied());
                             v
                         });
-                        info!("send_user_response from None 2");
                     }
                     RequestHeader::NeedMoreResponseData => {
                         panic!("TODO: unexpected request header")
@@ -407,7 +407,7 @@ impl<'a, const MAX_MESSAGE_LEN: usize> UserDataState<MAX_MESSAGE_LEN> {
     }
 }
 
-//#[derive(defmt::Format)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 enum RequestHeader {
     InitialRequest = 0,
     FinalRequest = 2,

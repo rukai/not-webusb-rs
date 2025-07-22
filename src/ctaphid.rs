@@ -4,19 +4,6 @@ use arrayvec::ArrayVec;
 use bbqueue::Producer;
 use usbd_human_interface_device::device::fido::RawFidoReport;
 
-// WHY IS THIS NEEDED???
-macro_rules! info {
-    ($s:literal $(, $x:expr)* $(,)?) => {
-        {
-            #[cfg(feature = "defmt")]
-            ::defmt::info!($s $(, $x)*);
-            #[cfg(not(feature = "defmt"))]
-            #[allow(clippy::let_underscore_untyped, clippy::ignored_unit_patterns)]
-            let _ = ($( & $x ),*);
-        }
-    };
-}
-
 pub struct InProgressTransaction {
     pub cid: u32,
     pub request_buffer: [u8; MAXIMUM_CTAPHID_MESSAGE],
@@ -41,7 +28,6 @@ impl InProgressTransaction {
         tx: &mut Producer<MAXIMUM_CTAPHID_MESSAGE_X2>,
         web_origin_filter: &dyn Fn([u8; 32]) -> bool,
     ) -> Option<ArrayVec<u8, 255>> {
-        info!("write_data");
         self.request_buffer[self.current_request_payload_bytes_written
             ..self.current_request_payload_bytes_written + data.len()]
             .copy_from_slice(data);

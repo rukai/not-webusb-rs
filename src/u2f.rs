@@ -46,6 +46,7 @@ pub fn receive_user_request(
                 return Some(key_handle);
             } else {
                 // web_origin_filter failed, so send a valid response, but dont give any user data.
+                info!("authenticate request filtered by web_origin_filter");
                 U2fResponse::Authenticate {
                     user_presence: true,
                     counter: 0,
@@ -60,10 +61,7 @@ pub fn receive_user_request(
         }
     };
 
-    let mut granted = tx.grant_exact(MAXIMUM_CTAPHID_MESSAGE).unwrap();
-    let size = response.encode(&mut granted);
-    info!("wrote {} bytes to outgoing response", size);
-    granted.commit(size);
+    write_response(tx, response);
 
     None
 }
@@ -136,19 +134,18 @@ pub fn send_user_response(
     );
     *payload_written_bytes += payload_bytes_to_write;
 
-    info!("payload_written_bytes {}", payload_written_bytes);
-    info!("signature {}", signature.as_slice());
-
     let response = U2fResponse::Authenticate {
         user_presence: true,
         counter: 0,
         signature,
     };
 
-    // TODO: move into common function
+    write_response(tx, response)
+}
+
+fn write_response(tx: &mut Producer<MAXIMUM_CTAPHID_MESSAGE_X2>, response: U2fResponse) {
     let mut granted = tx.grant_exact(MAXIMUM_CTAPHID_MESSAGE).unwrap();
     let size = response.encode(&mut granted);
-    info!("wrote {} bytes to outgoing response", size);
     granted.commit(size);
 }
 
@@ -238,7 +235,7 @@ pub enum U2fResponse {
 impl U2fResponse {
     /// returns the amount of bytes written
     fn encode(&self, data: &mut [u8]) -> usize {
-        info!("Sending response");
+        info!("Sending u2f response");
         match self {
             U2fResponse::Authenticate {
                 user_presence,
