@@ -6,7 +6,7 @@ readme = "readme.md"
 keywords = ["usb-device", "not", "webusb", "u2f", "fido"]
 categories = ["no-std", "embedded"]
 repository = "https://github.com/rukai/not-webusb"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 
 [dependencies]
