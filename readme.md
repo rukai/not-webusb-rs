@@ -1,5 +1,8 @@
 # not-webUSB
 
+[![Crates.io](https://img.shields.io/crates/v/not-webusb.svg)](https://crates.io/crates/not-webusb)
+[![Docs](https://docs.rs/not-webusb/badge.svg)](https://docs.rs/not-webusb)
+
 An alternative to webUSB with better browser support and the ability to restrict which sites can access the device.
 
 The goal is to be a production ready library for use in real devices.
