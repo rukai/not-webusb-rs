@@ -6,7 +6,7 @@ pub mod u2f;
 
 use crate::ctaphid::{
     ContinuationState, CtapHidError, CtapHidRequest, CtapHidRequestTy, CtapHidResponse,
-    CtapHidResponseTy, InProgressMessage, InitResponse,
+    CtapHidResponseTy, InProgressTransaction, InitResponse,
 };
 use arrayvec::ArrayVec;
 use bbqueue::{BBBuffer, Consumer, Producer};
@@ -27,7 +27,7 @@ static OUTGOING_MESSAGE_BYTES: BBBuffer<MAXIMUM_CTAPHID_MESSAGE_X2> = BBBuffer::
 
 pub struct NotWebUsb<'a, UsbBusT: UsbBus, const MAX_MESSAGE_LEN: usize = 1024> {
     cid_next: i32,
-    in_progress_message_option: Option<InProgressMessage>,
+    in_progress_transaction_option: Option<InProgressTransaction>,
     tx: Producer<'a, MAXIMUM_CTAPHID_MESSAGE_X2>,
     rx: Consumer<'a, MAXIMUM_CTAPHID_MESSAGE_X2>,
     raw_response: RawFidoReport,
@@ -62,7 +62,7 @@ impl<'a, UsbBusT: UsbBus, const MAX_MESSAGE_LEN: usize> NotWebUsb<'a, UsbBusT, M
             tx,
             rx,
             cid_next: 1,
-            in_progress_message_option: None,
+            in_progress_transaction_option: None,
             raw_response: RawFidoReport::default(),
             web_origin_filter,
             user_data: UserDataState::None,
@@ -91,14 +91,14 @@ impl<'a, UsbBusT: UsbBus, const MAX_MESSAGE_LEN: usize> NotWebUsb<'a, UsbBusT, M
                 let response = match request.ty {
                     CtapHidRequestTy::Ping => Some(CtapHidResponseTy::RawReport(report)),
                     CtapHidRequestTy::Message { length, data } => {
-                        if self.in_progress_message_option.is_some() {
+                        if self.in_progress_transaction_option.is_some() {
                             error!(
                                 "Cannot create new transaction while existing transaction is in progress"
                             )
                             // TODO: handle error
                         }
 
-                        self.in_progress_message_option = Some(InProgressMessage {
+                        self.in_progress_transaction_option = Some(InProgressTransaction {
                             cid: request.cid,
                             request_buffer: [0; MAXIMUM_CTAPHID_MESSAGE],
                             current_request_payload_size: length as usize,
@@ -107,7 +107,8 @@ impl<'a, UsbBusT: UsbBus, const MAX_MESSAGE_LEN: usize> NotWebUsb<'a, UsbBusT, M
                             response_ready_to_send: false,
                             response_final_packet_is_ready_to_send: false,
                         });
-                        if let Some(in_progress_message) = &mut self.in_progress_message_option {
+                        if let Some(in_progress_message) = &mut self.in_progress_transaction_option
+                        {
                             if let Some(request) = in_progress_message.receive_user_request(
                                 &data,
                                 &mut self.tx,
@@ -123,7 +124,8 @@ impl<'a, UsbBusT: UsbBus, const MAX_MESSAGE_LEN: usize> NotWebUsb<'a, UsbBusT, M
                         None
                     }
                     CtapHidRequestTy::Continuation { data, .. } => {
-                        if let Some(in_progress_message) = &mut self.in_progress_message_option {
+                        if let Some(in_progress_message) = &mut self.in_progress_transaction_option
+                        {
                             if in_progress_message.cid == request.cid {
                                 if let Some(request) = in_progress_message.receive_user_request(
                                     &data,
@@ -155,6 +157,17 @@ impl<'a, UsbBusT: UsbBus, const MAX_MESSAGE_LEN: usize> NotWebUsb<'a, UsbBusT, M
                             capabilities: 0,
                         }))
                     }
+
+                    CtapHidRequestTy::Cancel => {
+                        let will_cancel = self.in_progress_transaction_option.is_some();
+                        self.in_progress_transaction_option = None;
+                        // TODO
+                        if will_cancel {
+                            Some(CtapHidResponseTy::Error(CtapHidError::KeepAliveCancel))
+                        } else {
+                            None
+                        }
+                    }
                     CtapHidRequestTy::Unknown { cmd } => {
                         // TODO: handle error
                         warn!("Unknown CTAPHID command {}", cmd);
@@ -171,7 +184,7 @@ impl<'a, UsbBusT: UsbBus, const MAX_MESSAGE_LEN: usize> NotWebUsb<'a, UsbBusT, M
                     .encode(&mut self.raw_response);
                     info!("sending direct raw response {}", self.raw_response.packet);
                     match self.fido.device().write_report(&self.raw_response) {
-                        Err(UsbHidError::WouldBlock) => todo!("error handling"),
+                        Err(UsbHidError::WouldBlock) => todo!("error handling"), // TODO: phone error
                         Err(UsbHidError::Duplicate) => todo!("What does this mean?"),
                         Ok(_) => {}
                         Err(e) => {
@@ -182,7 +195,7 @@ impl<'a, UsbBusT: UsbBus, const MAX_MESSAGE_LEN: usize> NotWebUsb<'a, UsbBusT, M
             }
         }
 
-        if let Some(in_progress_message) = &mut self.in_progress_message_option {
+        if let Some(in_progress_transaction) = &mut self.in_progress_transaction_option {
             if let UserDataState::SendingResponse {
                 data,
                 bytes_sent,
@@ -190,7 +203,7 @@ impl<'a, UsbBusT: UsbBus, const MAX_MESSAGE_LEN: usize> NotWebUsb<'a, UsbBusT, M
             } = &mut self.user_data
             {
                 if *pending_request {
-                    in_progress_message.send_user_response(data, bytes_sent, &mut self.tx);
+                    in_progress_transaction.send_user_response(data, bytes_sent, &mut self.tx);
                     *pending_request = false;
                 }
 
@@ -200,29 +213,29 @@ impl<'a, UsbBusT: UsbBus, const MAX_MESSAGE_LEN: usize> NotWebUsb<'a, UsbBusT, M
             }
 
             // USB may have been blocked, leading to a response already being created but left unsent.
-            if !in_progress_message.response_ready_to_send {
+            if !in_progress_transaction.response_ready_to_send {
                 match self.rx.read() {
                     Ok(granted) => {
                         let remaining_u2f_size = granted.len();
                         info!("remaining_u2f_size {}", remaining_u2f_size);
                         let packet_size = if let ContinuationState::Initial =
-                            in_progress_message.response_continuation_state
+                            in_progress_transaction.response_continuation_state
                         {
                             remaining_u2f_size.min(57)
                         } else {
                             remaining_u2f_size.min(59)
                         };
                         info!("packet_size {}", packet_size);
-                        in_progress_message.response_final_packet_is_ready_to_send =
+                        in_progress_transaction.response_final_packet_is_ready_to_send =
                             remaining_u2f_size == packet_size;
                         CtapHidResponse {
-                            cid: in_progress_message.cid,
+                            cid: in_progress_transaction.cid,
                             ty: CtapHidResponseTy::Message {
                                 // only used in the initial message where it is treated as the full u2f size.
                                 length: remaining_u2f_size as u16,
                                 data: &granted[..packet_size],
                             },
-                            continuation_state: in_progress_message.response_continuation_state,
+                            continuation_state: in_progress_transaction.response_continuation_state,
                         }
                         .encode(&mut self.raw_response);
                         info!(
@@ -231,16 +244,16 @@ impl<'a, UsbBusT: UsbBus, const MAX_MESSAGE_LEN: usize> NotWebUsb<'a, UsbBusT, M
                         );
 
                         // step sequence state
-                        match &mut in_progress_message.response_continuation_state {
+                        match &mut in_progress_transaction.response_continuation_state {
                             ContinuationState::Continuation { sequence } => {
                                 *sequence += 1;
                             }
                             ContinuationState::Initial => {
-                                in_progress_message.response_continuation_state =
+                                in_progress_transaction.response_continuation_state =
                                     ContinuationState::Continuation { sequence: 0 }
                             }
                         }
-                        in_progress_message.response_ready_to_send = true;
+                        in_progress_transaction.response_ready_to_send = true;
 
                         granted.release(packet_size);
                     }
@@ -256,19 +269,19 @@ impl<'a, UsbBusT: UsbBus, const MAX_MESSAGE_LEN: usize> NotWebUsb<'a, UsbBusT, M
                 }
             }
 
-            if in_progress_message.response_ready_to_send {
+            if in_progress_transaction.response_ready_to_send {
                 match self.fido.device().write_report(&self.raw_response) {
                     Err(UsbHidError::WouldBlock) => {
                         debug!("Failed to send response as usb would block, will retry");
                     }
                     Err(UsbHidError::Duplicate) => todo!("What does this mean?"),
                     Ok(_) => {
-                        in_progress_message.response_ready_to_send = false;
+                        in_progress_transaction.response_ready_to_send = false;
 
-                        if in_progress_message.response_final_packet_is_ready_to_send {
+                        if in_progress_transaction.response_final_packet_is_ready_to_send {
                             // finished!!!
                             info!("all packets for the in progress message have been sent");
-                            self.in_progress_message_option = None;
+                            self.in_progress_transaction_option = None;
                         } else {
                             info!("one packet was sent, but more remain to be sent");
                         }
@@ -325,7 +338,7 @@ impl<'a, const MAX_MESSAGE_LEN: usize> UserDataState<MAX_MESSAGE_LEN> {
     fn receive_request(
         &mut self,
         request: ArrayVec<u8, 255>,
-        in_progress_message: &mut InProgressMessage,
+        in_progress_message: &mut InProgressTransaction,
         tx: &mut Producer<'a, MAXIMUM_CTAPHID_MESSAGE_X2>,
     ) {
         match self {

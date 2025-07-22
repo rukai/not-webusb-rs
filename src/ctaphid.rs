@@ -17,7 +17,7 @@ macro_rules! info {
     };
 }
 
-pub struct InProgressMessage {
+pub struct InProgressTransaction {
     pub cid: u32,
     pub request_buffer: [u8; MAXIMUM_CTAPHID_MESSAGE],
     pub current_request_payload_size: usize,
@@ -33,7 +33,7 @@ pub enum ContinuationState {
     Continuation { sequence: u8 },
 }
 
-impl InProgressMessage {
+impl InProgressTransaction {
     /// Returns true if the request has finished parsing and the response was sent
     pub fn receive_user_request(
         &mut self,
@@ -95,6 +95,7 @@ impl CtapHidRequest {
                 0x06 => CtapHidRequestTy::Init {
                     nonce8: packet[7..15].try_into().unwrap(),
                 },
+                0x11 => CtapHidRequestTy::Cancel,
                 cmd => CtapHidRequestTy::Unknown { cmd },
             }
         };
@@ -127,6 +128,7 @@ pub enum CtapHidRequestTy {
         /// since continuation header is 5 bytes long and packet is max 64 bytes this is max 59 bytes
         data: [u8; 59],
     },
+    Cancel,
     Unknown {
         /// The unknown command ID
         cmd: u8,
@@ -164,6 +166,7 @@ pub enum CtapHidError {
     ChannelBusy = 0x06,
     LockRequired = 0x0A,
     InvalidChannel = 0x0B,
+    KeepAliveCancel = 0x2D,
     Other = 0x7F,
 }
 
