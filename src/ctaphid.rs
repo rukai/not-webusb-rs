@@ -95,6 +95,7 @@ impl CtapHidRequest {
                 0x06 => CtapHidRequestTy::Init {
                     nonce8: packet[7..15].try_into().unwrap(),
                 },
+                0x10 => CtapHidRequestTy::CborMessage,
                 0x11 => CtapHidRequestTy::Cancel,
                 cmd => CtapHidRequestTy::Unknown { cmd },
             }
@@ -113,6 +114,7 @@ pub enum CtapHidRequestTy {
     },
     /// Send the entire raw request back as is.
     Ping,
+    /// A U2F message.
     Message {
         /// Full length of the payload, possibly this packet and one or more continuation packets.
         length: u16,
@@ -120,7 +122,7 @@ pub enum CtapHidRequestTy {
         /// since header is 7 bytes long and packet is max 64 bytes this is max 57 bytes
         data: [u8; 57],
     },
-    /// A continuation packet.
+    /// A U2F continuation packet.
     /// In theory this could be used for any command, in reality only Message is long enough to need it.
     Continuation {
         sequence: u8,
@@ -129,6 +131,8 @@ pub enum CtapHidRequestTy {
         data: [u8; 59],
     },
     Cancel,
+    /// Message in CBOR format, we dont support this.
+    CborMessage,
     Unknown {
         /// The unknown command ID
         cmd: u8,

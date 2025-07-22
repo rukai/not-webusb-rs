@@ -161,15 +161,18 @@ impl<'a, UsbBusT: UsbBus, const MAX_MESSAGE_LEN: usize> NotWebUsb<'a, UsbBusT, M
                     CtapHidRequestTy::Cancel => {
                         let will_cancel = self.in_progress_transaction_option.is_some();
                         self.in_progress_transaction_option = None;
-                        // TODO
+
                         if will_cancel {
                             Some(CtapHidResponseTy::Error(CtapHidError::KeepAliveCancel))
                         } else {
                             None
                         }
                     }
+                    CtapHidRequestTy::CborMessage => {
+                        // We dont support cbor, so return invalid command error.
+                        Some(CtapHidResponseTy::Error(CtapHidError::InvalidCommand))
+                    }
                     CtapHidRequestTy::Unknown { cmd } => {
-                        // TODO: handle error
                         warn!("Unknown CTAPHID command {}", cmd);
                         Some(CtapHidResponseTy::Error(CtapHidError::InvalidCommand))
                     }
@@ -184,7 +187,7 @@ impl<'a, UsbBusT: UsbBus, const MAX_MESSAGE_LEN: usize> NotWebUsb<'a, UsbBusT, M
                     .encode(&mut self.raw_response);
                     info!("sending direct raw response {}", self.raw_response.packet);
                     match self.fido.device().write_report(&self.raw_response) {
-                        Err(UsbHidError::WouldBlock) => todo!("error handling"), // TODO: phone error
+                        Err(UsbHidError::WouldBlock) => todo!("error handling"),
                         Err(UsbHidError::Duplicate) => todo!("What does this mean?"),
                         Ok(_) => {}
                         Err(e) => {
