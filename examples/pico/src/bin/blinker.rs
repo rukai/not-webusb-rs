@@ -103,7 +103,7 @@ fn main() -> ! {
 
         // TODO: can we make NotWebUsb poll logic allow only calling when usb_dev.poll returns true?
         usb_dev.poll(&mut [not_webusb.fido_class()]);
-        not_webusb.poll();
+        not_webusb.poll().unwrap();
 
         if let Some(request) = not_webusb.check_pending_request() {
             // UI will provide a value between 1-255, starting at 128

@@ -77,7 +77,7 @@ impl<'a, UsbBusT: UsbBus, const MAX_MESSAGE_LEN: usize> NotWebUsb<'a, UsbBusT, M
     }
 
     /// This must be called regularly
-    pub fn poll(&mut self) {
+    pub fn poll(&mut self) -> Result<(), NotWebUsbError> {
         match self.fido.device().read_report() {
             Err(UsbError::WouldBlock) => {
                 // do nothing
@@ -93,36 +93,37 @@ impl<'a, UsbBusT: UsbBus, const MAX_MESSAGE_LEN: usize> NotWebUsb<'a, UsbBusT, M
                     CtapHidRequestTy::Ping => Some(CtapHidResponseTy::RawReport(report)),
                     CtapHidRequestTy::Message { length, data } => {
                         if self.in_progress_transaction_option.is_some() {
-                            error!(
-                                "Cannot create new transaction while existing transaction is in progress"
-                            )
-                            // TODO: handle error
-                        }
-
-                        self.in_progress_transaction_option = Some(InProgressTransaction {
-                            cid: request.cid,
-                            request_buffer: [0; MAXIMUM_CTAPHID_MESSAGE],
-                            current_request_payload_size: length as usize,
-                            current_request_payload_bytes_written: 0,
-                            response_continuation_state: ContinuationState::Initial,
-                            response_ready_to_send: false,
-                            response_final_packet_is_ready_to_send: false,
-                        });
-                        if let Some(in_progress_message) = &mut self.in_progress_transaction_option
-                        {
-                            if let Some(request) = in_progress_message.receive_user_request(
-                                &data,
-                                &mut self.tx,
-                                &self.web_origin_filter,
-                            ) {
-                                self.user_data.receive_request(
-                                    request,
-                                    in_progress_message,
+                            warn!(
+                                "New transaction was requested while a transaction is already in progress"
+                            );
+                            Some(CtapHidResponseTy::Error(CtapHidError::ChannelBusy))
+                        } else {
+                            self.in_progress_transaction_option = Some(InProgressTransaction {
+                                cid: request.cid,
+                                request_buffer: [0; MAXIMUM_CTAPHID_MESSAGE],
+                                current_request_payload_size: length as usize,
+                                current_request_payload_bytes_written: 0,
+                                response_continuation_state: ContinuationState::Initial,
+                                response_ready_to_send: false,
+                                response_final_packet_is_ready_to_send: false,
+                            });
+                            if let Some(in_progress_message) =
+                                &mut self.in_progress_transaction_option
+                            {
+                                if let Some(request) = in_progress_message.receive_user_request(
+                                    &data,
                                     &mut self.tx,
-                                );
+                                    &self.web_origin_filter,
+                                ) {
+                                    self.user_data.receive_request(
+                                        request,
+                                        in_progress_message,
+                                        &mut self.tx,
+                                    );
+                                }
                             }
+                            None
                         }
-                        None
                     }
                     CtapHidRequestTy::Continuation { data, .. } => {
                         if let Some(in_progress_message) = &mut self.in_progress_transaction_option
@@ -142,6 +143,8 @@ impl<'a, UsbBusT: UsbBus, const MAX_MESSAGE_LEN: usize> NotWebUsb<'a, UsbBusT, M
                             } else {
                                 // TODO: error or maybe just drop it
                             }
+                        } else {
+                            warn!("Continuation packet with no Initial packet, ignoring")
                         }
                         None
                     }
@@ -294,6 +297,7 @@ impl<'a, UsbBusT: UsbBus, const MAX_MESSAGE_LEN: usize> NotWebUsb<'a, UsbBusT, M
                 }
             }
         }
+        Ok(())
     }
 
     /// Returns the current request if there is one.
@@ -321,6 +325,7 @@ impl<'a, UsbBusT: UsbBus, const MAX_MESSAGE_LEN: usize> NotWebUsb<'a, UsbBusT, M
 }
 
 /// Represents the state of any in progress user requests or responses.
+/// This is the highest level state and does not hold any fido/ctap/u2f state.
 enum UserDataState<const MAX_MESSAGE_LEN: usize> {
     /// The request has been partially received from the client.
     /// The device has not looked at any of it yet.
@@ -348,21 +353,25 @@ impl<'a, const MAX_MESSAGE_LEN: usize> UserDataState<MAX_MESSAGE_LEN> {
     ) {
         match self {
             UserDataState::ReceivingRequest(partial_request) => {
-                info!("UserDataState::ReceivingRequest");
                 let header = RequestHeader::parse(request[0]);
                 partial_request.extend(request.as_slice()[1..].iter().copied());
                 match header {
-                    RequestHeader::FinalRequest => {
+                    Some(RequestHeader::FinalRequest) => {
+                        info!("continuing user request - final request packet");
                         *self = UserDataState::ReceivedRequest({
                             let mut v = ArrayVec::new();
                             v.extend(partial_request.as_slice().iter().copied());
                             v
                         });
                     }
-                    RequestHeader::InitialRequest => {
+                    Some(RequestHeader::InitialRequest) => {
+                        info!("continuing user request - initial request packet");
                         in_progress_message.send_user_response(&[], &mut 0, tx);
                     }
-                    RequestHeader::NeedMoreResponseData => panic!("unexpected request header"),
+                    Some(RequestHeader::NeedMoreResponseData) => {
+                        panic!("unexpected request header")
+                    }
+                    None => todo!("unknown request header"),
                 }
             }
             UserDataState::ReceivedRequest(_) => {
@@ -371,7 +380,8 @@ impl<'a, const MAX_MESSAGE_LEN: usize> UserDataState<MAX_MESSAGE_LEN> {
             UserDataState::SendingResponse {
                 pending_request, ..
             } => match RequestHeader::parse(request[0]) {
-                RequestHeader::NeedMoreResponseData => {
+                Some(RequestHeader::NeedMoreResponseData) => {
+                    info!("received user request for more response data");
                     *pending_request = true;
                 }
                 _ => panic!(
@@ -380,17 +390,17 @@ impl<'a, const MAX_MESSAGE_LEN: usize> UserDataState<MAX_MESSAGE_LEN> {
             },
             UserDataState::None => {
                 // start a new transaction
-                info!("UserDataState::None");
                 match RequestHeader::parse(request[0]) {
-                    RequestHeader::FinalRequest => {
-                        info!("starting new request - final request packet");
+                    Some(RequestHeader::FinalRequest) => {
+                        info!("starting new user request - final request packet");
                         *self = UserDataState::ReceivedRequest({
                             let mut v = ArrayVec::new();
                             v.extend(request.as_slice()[1..].iter().copied());
                             v
                         });
                     }
-                    RequestHeader::InitialRequest => {
+                    Some(RequestHeader::InitialRequest) => {
+                        info!("starting new user request - initial request packet");
                         in_progress_message.send_user_response(&[], &mut 0, tx);
                         *self = UserDataState::ReceivingRequest({
                             let mut v = ArrayVec::new();
@@ -398,9 +408,10 @@ impl<'a, const MAX_MESSAGE_LEN: usize> UserDataState<MAX_MESSAGE_LEN> {
                             v
                         });
                     }
-                    RequestHeader::NeedMoreResponseData => {
+                    Some(RequestHeader::NeedMoreResponseData) => {
                         panic!("TODO: unexpected request header")
                     }
+                    None => todo!("unknown user request header"),
                 }
             }
         }
@@ -415,12 +426,19 @@ enum RequestHeader {
 }
 
 impl RequestHeader {
-    fn parse(byte: u8) -> Self {
+    fn parse(byte: u8) -> Option<Self> {
         match byte {
-            0 => Self::InitialRequest,
-            1 => Self::NeedMoreResponseData,
-            2 => Self::FinalRequest,
-            _ => panic!("Unknown request header"), // TODO: error handling
+            0 => Some(Self::InitialRequest),
+            1 => Some(Self::NeedMoreResponseData),
+            2 => Some(Self::FinalRequest),
+            _ => None,
         }
     }
+}
+
+#[derive(Debug)]
+pub enum NotWebUsbError {
+    /// An error that NotWebusb could not recover from internally.
+    /// You should assume the `NotWebUsb` is in an invalid internal state and the usb connection + NotWebusb must be recreated from scratch.
+    Unrecoverable,
 }

@@ -4,6 +4,8 @@ use arrayvec::ArrayVec;
 use bbqueue::Producer;
 use usbd_human_interface_device::device::fido::RawFidoReport;
 
+/// Represents the state of an in progress transaction.
+/// The term `transaction` comes from the CTAP spec, referring to the processing of a request/response pair.
 pub struct InProgressTransaction {
     pub cid: u32,
     pub request_buffer: [u8; MAXIMUM_CTAPHID_MESSAGE],
