@@ -12,7 +12,6 @@ pub fn receive_user_request(
 ) -> Option<ArrayVec<u8, 255>> {
     let request = U2fRequest::decode(message_data);
 
-    //info!("received u2f request {:?}", request); // TODO: ArrayVec defmt support?
     match &request {
         U2fRequest::Authenticate {
             control,
@@ -57,7 +56,12 @@ pub fn receive_user_request(
         U2fRequest::Version => U2fResponse::Version,
         U2fRequest::Unknown { cla, ins } => {
             warn!("unknown message request cla={} ins={}", cla, ins);
-            U2fResponse::Error(MessageResponseError::InsNotSupported)
+            if cla == 0 {
+                U2fResponse::Error(MessageResponseError::InsNotSupported)
+            } else {
+                // We could just return `InsNotSupported` here to, but this makes us slightly more compliant with the U2F protocol.
+                U2fResponse::Error(MessageResponseError::ClaNotSupported)
+            }
         }
     };
 
@@ -207,7 +211,7 @@ pub enum AuthenticateControl {
     CheckOnly,
     EnforceUserPresenceAndSign,
     DontEnforceUserPresenceAndSign,
-    Unknown(u8),
+    Unknown,
 }
 
 impl AuthenticateControl {
@@ -216,7 +220,7 @@ impl AuthenticateControl {
             0x07 => AuthenticateControl::CheckOnly,
             0x03 => AuthenticateControl::EnforceUserPresenceAndSign,
             0x08 => AuthenticateControl::DontEnforceUserPresenceAndSign,
-            unknown => AuthenticateControl::Unknown(unknown),
+            _unknown => AuthenticateControl::Unknown,
         }
     }
 }
@@ -281,10 +285,13 @@ pub enum MessageResponseError {
     /// The request was rejected due to test-of-user-presence being required.
     /// This actually indicates success when responding to check-only authenticate requests. This protocol is cursed.
     ConditionsNotSatisfied = 0x6985,
+
     /// The request was rejected due to an invalid key handle.
-    WrongData = 0x6A80,
+    //WrongData = 0x6A80,
+
     /// The length of the request was invalid.
-    WrongLength = 0x6700,
+    //WrongLength = 0x6700,
+
     /// The Class byte of the request is not supported.
     ClaNotSupported = 0x6E00,
     /// The Instruction of the request is not supported.

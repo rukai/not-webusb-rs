@@ -1,8 +1,8 @@
 #![no_std]
 
-pub mod ctaphid;
+mod ctaphid;
 pub(crate) mod fmt;
-pub mod u2f;
+mod u2f;
 
 use crate::ctaphid::{
     ContinuationState, CtapHidError, CtapHidRequest, CtapHidRequestTy, CtapHidResponse,
@@ -25,6 +25,9 @@ const MAXIMUM_CTAPHID_MESSAGE_X2: usize = MAXIMUM_CTAPHID_MESSAGE * 2;
 // TODO: consider a better type than BBBuffer for this purpose.
 static OUTGOING_MESSAGE_BYTES: BBBuffer<MAXIMUM_CTAPHID_MESSAGE_X2> = BBBuffer::new();
 
+/// The main type for not-webusb.
+/// Construct this via `NotWebUsb::new` and then regularly poll it via `NotWebUsb::poll`.
+/// Check for requests via `NotWebUsb::check_pending_request`, a response must be sent via `NotWebUsb::send_response` once it is ready.
 pub struct NotWebUsb<'a, UsbBusT: UsbBus, const MAX_MESSAGE_LEN: usize = 1024> {
     cid_next: i32,
     in_progress_transaction_option: Option<InProgressTransaction>,
@@ -61,6 +64,7 @@ impl<'a, UsbBusT: UsbBus, const MAX_MESSAGE_LEN: usize> NotWebUsb<'a, UsbBusT, M
             fido,
             tx,
             rx,
+            // Start at CID 1, since CID 0 is reserved
             cid_next: 1,
             in_progress_transaction_option: None,
             raw_response: RawFidoReport::default(),
@@ -76,7 +80,21 @@ impl<'a, UsbBusT: UsbBus, const MAX_MESSAGE_LEN: usize> NotWebUsb<'a, UsbBusT, M
         &mut self.fido
     }
 
-    /// This must be called regularly
+    fn reset_state(&mut self) {
+        self.cid_next = 0;
+        self.in_progress_transaction_option = None;
+        if let Ok(read) = self.rx.split_read() {
+            read.release(MAXIMUM_CTAPHID_MESSAGE_X2);
+        }
+        self.raw_response = RawFidoReport::default();
+        self.user_data = UserDataState::None;
+    }
+
+    /// This must be called regularly, even when there is no in progress request or response.
+    ///
+    /// Performs CTAPHID request/response handling.
+    /// If a user request is contained within the CTAPHID requests it will be stored internally such that it is returned by `NotWebUsb::check_pending_request.
+    /// If a response is set by `NotWebUsb::send_response` the response will be sent within the CTAPHID responses.
     pub fn poll(&mut self) -> Result<(), NotWebUsbError> {
         match self.fido.device().read_report() {
             Err(UsbError::WouldBlock) => {
@@ -84,7 +102,12 @@ impl<'a, UsbBusT: UsbBus, const MAX_MESSAGE_LEN: usize> NotWebUsb<'a, UsbBusT, M
             }
             Err(e) => {
                 // We failed to read this request, log and continue on, hopefully its recoverable.
-                error!("Failed to read fido report: {:?}", e)
+                error!(
+                    "Failed to read fido report: {:?} - resetting NotWebusb state",
+                    e
+                );
+                self.reset_state();
+                return Err(NotWebUsbError::UsbError);
             }
             Ok(report) => {
                 let request = CtapHidRequest::parse(&report);
@@ -149,7 +172,6 @@ impl<'a, UsbBusT: UsbBus, const MAX_MESSAGE_LEN: usize> NotWebUsb<'a, UsbBusT, M
                         None
                     }
                     CtapHidRequestTy::Init { nonce8 } => {
-                        // TODO: handle broadcast CID
                         self.cid_next += 1;
                         Some(CtapHidResponseTy::Init(InitResponse {
                             nonce_8_bytes: nonce8,
@@ -195,7 +217,12 @@ impl<'a, UsbBusT: UsbBus, const MAX_MESSAGE_LEN: usize> NotWebUsb<'a, UsbBusT, M
                         Err(UsbHidError::Duplicate) => todo!("What does this mean?"),
                         Ok(_) => {}
                         Err(e) => {
-                            panic!("Failed to write fido report: {:?}", e)
+                            error!(
+                                "Failed to write fido report: {:?} - resetting NotWebusb state",
+                                e
+                            );
+                            self.reset_state();
+                            return Err(NotWebUsbError::UsbError);
                         }
                     }
                 }
@@ -438,7 +465,9 @@ impl RequestHeader {
 
 #[derive(Debug)]
 pub enum NotWebUsbError {
-    /// An error that NotWebusb could not recover from internally.
-    /// You should assume the `NotWebUsb` is in an invalid internal state and the usb connection + NotWebusb must be recreated from scratch.
-    Unrecoverable,
+    /// A USB error that NotWebusb cannot handle.
+    /// This will not occur in regular usage and indicates something has gone terribly wrong.
+    /// All NotWebUsb internal state is reset including the loss of any in progress request or response is lost.
+    /// Attempt to recover by either recreating the USB connection or resetting the device.
+    UsbError,
 }

@@ -151,15 +151,15 @@ pub enum CtapHidResponseTy<'a> {
 #[derive(Clone, Copy)]
 pub enum CtapHidError {
     InvalidCommand = 0x01,
-    InvalidParameter = 0x02,
-    InvalidLen = 0x03,
-    InvalidSeq = 0x04,
-    MessageTimeout = 0x05,
+    //InvalidParameter = 0x02,
+    //InvalidLen = 0x03,
+    //InvalidSeq = 0x04,
+    //MessageTimeout = 0x05,
     ChannelBusy = 0x06,
-    LockRequired = 0x0A,
-    InvalidChannel = 0x0B,
+    //LockRequired = 0x0A,
+    //InvalidChannel = 0x0B,
     KeepAliveCancel = 0x2D,
-    Other = 0x7F,
+    //Other = 0x7F,
 }
 
 pub struct InitResponse {
