@@ -202,8 +202,9 @@ impl<'a, UsbBusT: UsbBus, const MAX_MESSAGE_LEN: usize> NotWebUsb<'a, UsbBusT, M
                             None
                         }
                     }
-                    CtapHidRequestTy::CborMessage => {
+                    CtapHidRequestTy::CborMessage { data } => {
                         // We dont support cbor, so return invalid command error.
+                        warn!("received CBOR {}", data);
                         Some(CtapHidResponseTy::Error(CtapHidError::InvalidCommand))
                     }
                     CtapHidRequestTy::Unknown { cmd } => {

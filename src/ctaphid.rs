@@ -98,7 +98,9 @@ impl CtapHidRequest {
                 0x06 => CtapHidRequestTy::Init {
                     nonce8: packet[7..15].try_into().unwrap(),
                 },
-                0x10 => CtapHidRequestTy::CborMessage,
+                0x10 => CtapHidRequestTy::CborMessage {
+                    data: packet[4..].try_into().unwrap(),
+                },
                 0x11 => CtapHidRequestTy::Cancel,
                 cmd => CtapHidRequestTy::Unknown { cmd },
             }
@@ -135,7 +137,9 @@ pub enum CtapHidRequestTy {
     },
     Cancel,
     /// Message in CBOR format, we dont support this.
-    CborMessage,
+    CborMessage {
+        data: [u8; 60],
+    },
     Unknown {
         /// The unknown command ID
         cmd: u8,
