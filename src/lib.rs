@@ -116,7 +116,7 @@ impl<'a, UsbBusT: UsbBus, const MAX_MESSAGE_LEN: usize> NotWebUsb<'a, UsbBusT, M
                     CtapHidRequestTy::Message { length, data } => {
                         if length as usize > MAXIMUM_CTAPHID_MESSAGE {
                             error!(
-                                "Received ctaphid request with invalid length was {} but must be less than {}",
+                                "Received ctaphid request with invalid length was {} but must be less than or equal to {}",
                                 length, MAXIMUM_CTAPHID_MESSAGE
                             );
                             Some(CtapHidResponseTy::Error(CtapHidError::InvalidLen))
