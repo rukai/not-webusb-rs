@@ -167,7 +167,7 @@ pub enum CtapHidResponseTy<'a> {
 pub enum CtapHidError {
     InvalidCommand = 0x01,
     //InvalidParameter = 0x02,
-    //InvalidLen = 0x03,
+    InvalidLen = 0x03,
     InvalidSeq = 0x04,
     //MessageTimeout = 0x05,
     ChannelBusy = 0x06,

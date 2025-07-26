@@ -30,7 +30,7 @@ static OUTGOING_MESSAGE_BYTES: BBBuffer<MAXIMUM_CTAPHID_MESSAGE_X2> = BBBuffer::
 /// Check for requests via `NotWebUsb::check_pending_request`, a response must be sent via `NotWebUsb::send_response` once it is ready.
 pub struct NotWebUsb<'a, UsbBusT: UsbBus, const MAX_MESSAGE_LEN: usize = 1024> {
     cid_next: i32,
-    in_progress_transaction_option: Option<InProgressTransaction>,
+    in_progress_transaction: Option<InProgressTransaction>,
     tx: Producer<'a, MAXIMUM_CTAPHID_MESSAGE_X2>,
     rx: Consumer<'a, MAXIMUM_CTAPHID_MESSAGE_X2>,
     raw_response: RawFidoReport,
@@ -66,7 +66,7 @@ impl<'a, UsbBusT: UsbBus, const MAX_MESSAGE_LEN: usize> NotWebUsb<'a, UsbBusT, M
             rx,
             // Start at CID 1, since CID 0 is reserved
             cid_next: 1,
-            in_progress_transaction_option: None,
+            in_progress_transaction: None,
             raw_response: RawFidoReport::default(),
             web_origin_filter,
             user_data: UserDataState::None,
@@ -82,7 +82,7 @@ impl<'a, UsbBusT: UsbBus, const MAX_MESSAGE_LEN: usize> NotWebUsb<'a, UsbBusT, M
 
     fn reset_state(&mut self) {
         self.cid_next = 0;
-        self.in_progress_transaction_option = None;
+        self.in_progress_transaction = None;
         if let Ok(read) = self.rx.split_read() {
             read.release(MAXIMUM_CTAPHID_MESSAGE_X2);
         }
@@ -101,7 +101,6 @@ impl<'a, UsbBusT: UsbBus, const MAX_MESSAGE_LEN: usize> NotWebUsb<'a, UsbBusT, M
                 // do nothing
             }
             Err(e) => {
-                // We failed to read this request, log and continue on, hopefully its recoverable.
                 error!(
                     "Failed to read fido report: {:?} - resetting NotWebusb state",
                     e
@@ -115,17 +114,21 @@ impl<'a, UsbBusT: UsbBus, const MAX_MESSAGE_LEN: usize> NotWebUsb<'a, UsbBusT, M
                 let response = match request.ty {
                     CtapHidRequestTy::Ping => Some(CtapHidResponseTy::RawReport(report)),
                     CtapHidRequestTy::Message { length, data } => {
-                        if self.in_progress_transaction_option.is_some() {
+                        if length as usize > MAXIMUM_CTAPHID_MESSAGE {
+                            error!(
+                                "Received ctaphid request with invalid length was {} but must be less than {}",
+                                length, MAXIMUM_CTAPHID_MESSAGE
+                            );
+                            Some(CtapHidResponseTy::Error(CtapHidError::InvalidLen))
+                        } else if self.in_progress_transaction.is_some() {
                             warn!(
                                 "New transaction was requested while a transaction is already in progress"
                             );
                             Some(CtapHidResponseTy::Error(CtapHidError::ChannelBusy))
                         } else {
-                            self.in_progress_transaction_option =
+                            self.in_progress_transaction =
                                 Some(InProgressTransaction::new(request.cid, length));
-                            if let Some(in_progress_message) =
-                                &mut self.in_progress_transaction_option
-                            {
+                            if let Some(in_progress_message) = &mut self.in_progress_transaction {
                                 if let Some(request) = in_progress_message.receive_user_request(
                                     &data,
                                     &mut self.tx,
@@ -142,9 +145,7 @@ impl<'a, UsbBusT: UsbBus, const MAX_MESSAGE_LEN: usize> NotWebUsb<'a, UsbBusT, M
                         }
                     }
                     CtapHidRequestTy::Continuation { data, sequence } => {
-                        if let Some(in_progress_transaction) =
-                            &mut self.in_progress_transaction_option
-                        {
+                        if let Some(in_progress_transaction) = &mut self.in_progress_transaction {
                             if in_progress_transaction.request_sequence != sequence {
                                 error!(
                                     "Received ctaphid request with invalid sequence number was {} expected {}",
@@ -192,8 +193,8 @@ impl<'a, UsbBusT: UsbBus, const MAX_MESSAGE_LEN: usize> NotWebUsb<'a, UsbBusT, M
                     }
 
                     CtapHidRequestTy::Cancel => {
-                        let will_cancel = self.in_progress_transaction_option.is_some();
-                        self.in_progress_transaction_option = None;
+                        let will_cancel = self.in_progress_transaction.is_some();
+                        self.in_progress_transaction = None;
 
                         if will_cancel {
                             Some(CtapHidResponseTy::Error(CtapHidError::KeepAliveCancel))
@@ -236,7 +237,7 @@ impl<'a, UsbBusT: UsbBus, const MAX_MESSAGE_LEN: usize> NotWebUsb<'a, UsbBusT, M
             }
         }
 
-        if let Some(in_progress_transaction) = &mut self.in_progress_transaction_option {
+        if let Some(in_progress_transaction) = &mut self.in_progress_transaction {
             if let UserDataState::SendingResponse {
                 data,
                 bytes_sent,
@@ -320,7 +321,7 @@ impl<'a, UsbBusT: UsbBus, const MAX_MESSAGE_LEN: usize> NotWebUsb<'a, UsbBusT, M
                         if in_progress_transaction.response_final_packet_is_ready_to_send {
                             // finished!!!
                             info!("all packets for the in progress message have been sent");
-                            self.in_progress_transaction_option = None;
+                            self.in_progress_transaction = None;
                         } else {
                             info!("one ctaphid packet was sent, but more remain to be sent");
                         }

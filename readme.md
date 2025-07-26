@@ -3,7 +3,9 @@
 [![Crates.io](https://img.shields.io/crates/v/not-webusb.svg)](https://crates.io/crates/not-webusb)
 [![Docs](https://docs.rs/not-webusb/badge.svg)](https://docs.rs/not-webusb)
 
-An alternative to webUSB with better browser support and the ability to restrict which sites can access the device.
+An alternative to webUSB for simple usecases with better browser support and the ability to restrict which sites can access the device.
+
+Usage follows a request/response model where the browser JS or wasm sends a request to which the device must send exactly 1 response.
 
 The goal is to be a production ready library for use in real devices.
 However, while it works fine for simple use cases, it is not currently in a state where I would be comfortable deploying this in production.
@@ -15,7 +17,7 @@ not-webusb consists of:
   * [sample javascript code](web/not_webusb.js)
   * Or, a rust crate for wasm clients (Not implemented yet)
 
-not-webusb is well suited for occasional one time operations like flashing configuration of a device. e.g. setting key mappings for a keyboard.
+not-webusb is well suited for occasional one time operations. e.g. flashing key mappings for a keyboard.
 
 Constant live communication with a device is possible, but poorly suited. e.g. reading sensor data.
 
@@ -82,5 +84,6 @@ Flash the rot13 example firmware to a pico and then run `cargo test`.
 ## Future work
 
 * Make protocol implementation more robust
+  * transaction timeout
 * Internal cleanup
 * I would love for this project to have a recommended webusb implementation of the fido client protocol, allowing browsers with webusb support to avoid the "touch your security key" pop ups, while keeping fido as a fallback protocol. I have no immediate plans to implement this however.
