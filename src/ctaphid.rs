@@ -8,9 +8,11 @@ use usbd_human_interface_device::device::fido::RawFidoReport;
 /// The term `transaction` comes from the CTAP spec, referring to the processing of a request/response pair.
 pub struct InProgressTransaction {
     pub cid: u32,
+    /// value values 0-127
+    pub request_sequence: u8,
     pub request_buffer: [u8; MAXIMUM_CTAPHID_MESSAGE],
-    pub current_request_payload_size: usize,
-    pub current_request_payload_bytes_written: usize,
+    pub request_payload_size: usize,
+    pub request_payload_bytes_written: usize,
     pub response_continuation_state: ContinuationState,
     pub response_ready_to_send: bool,
     pub response_final_packet_is_ready_to_send: bool,
@@ -23,6 +25,19 @@ pub enum ContinuationState {
 }
 
 impl InProgressTransaction {
+    pub fn new(cid: u32, request_payload_size: u16) -> Self {
+        InProgressTransaction {
+            cid,
+            request_sequence: 0,
+            request_buffer: [0; MAXIMUM_CTAPHID_MESSAGE],
+            request_payload_size: request_payload_size as usize,
+            request_payload_bytes_written: 0,
+            response_continuation_state: ContinuationState::Initial,
+            response_ready_to_send: false,
+            response_final_packet_is_ready_to_send: false,
+        }
+    }
+
     /// Returns true if the request has finished parsing and the response was sent
     pub fn receive_user_request(
         &mut self,
@@ -30,15 +45,15 @@ impl InProgressTransaction {
         tx: &mut Producer<MAXIMUM_CTAPHID_MESSAGE_X2>,
         web_origin_filter: &dyn Fn([u8; 32]) -> bool,
     ) -> Option<ArrayVec<u8, 255>> {
-        self.request_buffer[self.current_request_payload_bytes_written
-            ..self.current_request_payload_bytes_written + data.len()]
+        self.request_buffer
+            [self.request_payload_bytes_written..self.request_payload_bytes_written + data.len()]
             .copy_from_slice(data);
 
         // if we have completely received the request, respond to it.
-        self.current_request_payload_bytes_written += data.len();
-        if self.current_request_payload_bytes_written >= self.current_request_payload_size {
+        self.request_payload_bytes_written += data.len();
+        if self.request_payload_bytes_written >= self.request_payload_size {
             return receive_user_request(
-                &self.request_buffer[..self.current_request_payload_size],
+                &self.request_buffer[..self.request_payload_size],
                 tx,
                 web_origin_filter,
             );
@@ -111,7 +126,7 @@ pub enum CtapHidRequestTy {
         data: [u8; 57],
     },
     /// A U2F continuation packet.
-    /// In theory this could be used for any command, in reality only Message is long enough to need it.
+    /// In theory this could be used for any command, in reality only `Message` is long enough to need it.
     Continuation {
         sequence: u8,
         /// packet contents.
@@ -153,7 +168,7 @@ pub enum CtapHidError {
     InvalidCommand = 0x01,
     //InvalidParameter = 0x02,
     //InvalidLen = 0x03,
-    //InvalidSeq = 0x04,
+    InvalidSeq = 0x04,
     //MessageTimeout = 0x05,
     ChannelBusy = 0x06,
     //LockRequired = 0x0A,

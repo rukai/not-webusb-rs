@@ -121,15 +121,8 @@ impl<'a, UsbBusT: UsbBus, const MAX_MESSAGE_LEN: usize> NotWebUsb<'a, UsbBusT, M
                             );
                             Some(CtapHidResponseTy::Error(CtapHidError::ChannelBusy))
                         } else {
-                            self.in_progress_transaction_option = Some(InProgressTransaction {
-                                cid: request.cid,
-                                request_buffer: [0; MAXIMUM_CTAPHID_MESSAGE],
-                                current_request_payload_size: length as usize,
-                                current_request_payload_bytes_written: 0,
-                                response_continuation_state: ContinuationState::Initial,
-                                response_ready_to_send: false,
-                                response_final_packet_is_ready_to_send: false,
-                            });
+                            self.in_progress_transaction_option =
+                                Some(InProgressTransaction::new(request.cid, length));
                             if let Some(in_progress_message) =
                                 &mut self.in_progress_transaction_option
                             {
@@ -148,28 +141,42 @@ impl<'a, UsbBusT: UsbBus, const MAX_MESSAGE_LEN: usize> NotWebUsb<'a, UsbBusT, M
                             None
                         }
                     }
-                    CtapHidRequestTy::Continuation { data, .. } => {
-                        if let Some(in_progress_message) = &mut self.in_progress_transaction_option
+                    CtapHidRequestTy::Continuation { data, sequence } => {
+                        if let Some(in_progress_transaction) =
+                            &mut self.in_progress_transaction_option
                         {
-                            if in_progress_message.cid == request.cid {
-                                if let Some(request) = in_progress_message.receive_user_request(
-                                    &data,
-                                    &mut self.tx,
-                                    &self.web_origin_filter,
-                                ) {
-                                    self.user_data.receive_request(
-                                        request,
-                                        in_progress_message,
-                                        &mut self.tx,
-                                    );
-                                }
+                            if in_progress_transaction.request_sequence != sequence {
+                                error!(
+                                    "Received ctaphid request with invalid sequence number was {} expected {}",
+                                    sequence, in_progress_transaction.request_sequence
+                                );
+                                Some(CtapHidResponseTy::Error(CtapHidError::InvalidSeq))
                             } else {
-                                // TODO: error or maybe just drop it
+                                in_progress_transaction.request_sequence += 1;
+
+                                if in_progress_transaction.cid == request.cid {
+                                    if let Some(request) = in_progress_transaction
+                                        .receive_user_request(
+                                            &data,
+                                            &mut self.tx,
+                                            &self.web_origin_filter,
+                                        )
+                                    {
+                                        self.user_data.receive_request(
+                                            request,
+                                            in_progress_transaction,
+                                            &mut self.tx,
+                                        );
+                                    }
+                                } else {
+                                    // TODO: error or maybe just drop it
+                                }
+                                None
                             }
                         } else {
-                            warn!("Continuation packet with no Initial packet, ignoring")
+                            warn!("Continuation packet with no Initial packet, ignoring");
+                            None
                         }
-                        None
                     }
                     CtapHidRequestTy::Init { nonce8 } => {
                         self.cid_next += 1;
