@@ -28,7 +28,7 @@ not-webusb supports all major browsers, having been tested on:
 
 * Firefox Desktop + Android
 * Chrome Desktop + Android
-* Edge - TODO test
+* Edge
 * Safari Desktop
 
 ## Downsides
@@ -87,3 +87,4 @@ Flash the rot13 example firmware to a pico and then run `cargo test`.
   * transaction timeout
 * Internal cleanup
 * I would love for this project to have a recommended webusb implementation of the fido client protocol, allowing browsers with webusb support to avoid the "touch your security key" pop ups, while keeping fido as a fallback protocol. I have no immediate plans to implement this however.
+* Long message on chrome + windows has invalid characters at the end

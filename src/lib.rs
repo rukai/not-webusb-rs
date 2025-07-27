@@ -6,7 +6,7 @@ mod u2f;
 
 use crate::ctaphid::{
     ContinuationState, CtapHidError, CtapHidRequest, CtapHidRequestTy, CtapHidResponse,
-    CtapHidResponseTy, InProgressTransaction, InitResponse,
+    CtapHidResponseTy, InProgressTransaction, InitResponse, MessageType,
 };
 use arrayvec::ArrayVec;
 use bbqueue::{BBBuffer, Consumer, Producer};
@@ -113,7 +113,7 @@ impl<'a, UsbBusT: UsbBus, const MAX_MESSAGE_LEN: usize> NotWebUsb<'a, UsbBusT, M
                 info!("received ctaphid request {:?}", request);
                 let response = match request.ty {
                     CtapHidRequestTy::Ping => Some(CtapHidResponseTy::RawReport(report)),
-                    CtapHidRequestTy::Message { length, data } => {
+                    CtapHidRequestTy::MessageInitial { length, data, ty } => {
                         if length as usize > MAXIMUM_CTAPHID_MESSAGE {
                             error!(
                                 "Received ctaphid request with invalid length was {} but must be less than or equal to {}",
@@ -126,25 +126,36 @@ impl<'a, UsbBusT: UsbBus, const MAX_MESSAGE_LEN: usize> NotWebUsb<'a, UsbBusT, M
                             );
                             Some(CtapHidResponseTy::Error(CtapHidError::ChannelBusy))
                         } else {
-                            self.in_progress_transaction =
-                                Some(InProgressTransaction::new(request.cid, length));
-                            if let Some(in_progress_message) = &mut self.in_progress_transaction {
-                                if let Some(request) = in_progress_message.receive_user_request(
-                                    &data,
-                                    &mut self.tx,
-                                    &self.web_origin_filter,
-                                ) {
-                                    self.user_data.receive_request(
-                                        request,
-                                        in_progress_message,
+                            let is_get_info_request = length == 1 && data[0] == 4;
+                            if let MessageType::Cbor = ty
+                                && !is_get_info_request
+                            {
+                                warn!(
+                                    "Client sent non GetInfo CBOR request but we only support GetInfo requests"
+                                );
+                                Some(CtapHidResponseTy::Error(CtapHidError::InvalidCommand))
+                            } else {
+                                self.in_progress_transaction =
+                                    Some(InProgressTransaction::new(ty, request.cid, length));
+                                if let Some(in_progress_message) = &mut self.in_progress_transaction
+                                {
+                                    if let Some(request) = in_progress_message.receive_user_request(
+                                        &data,
                                         &mut self.tx,
-                                    );
+                                        &self.web_origin_filter,
+                                    ) {
+                                        self.user_data.receive_request(
+                                            request,
+                                            in_progress_message,
+                                            &mut self.tx,
+                                        );
+                                    }
                                 }
+                                None
                             }
-                            None
                         }
                     }
-                    CtapHidRequestTy::Continuation { data, sequence } => {
+                    CtapHidRequestTy::MessageContinuation { data, sequence } => {
                         if let Some(in_progress_transaction) = &mut self.in_progress_transaction {
                             if in_progress_transaction.request_sequence != sequence {
                                 error!(
@@ -201,11 +212,6 @@ impl<'a, UsbBusT: UsbBus, const MAX_MESSAGE_LEN: usize> NotWebUsb<'a, UsbBusT, M
                         } else {
                             None
                         }
-                    }
-                    CtapHidRequestTy::CborMessage { data } => {
-                        // We dont support cbor, so return invalid command error.
-                        warn!("received CBOR {}", data);
-                        Some(CtapHidResponseTy::Error(CtapHidError::InvalidCommand))
                     }
                     CtapHidRequestTy::Unknown { cmd } => {
                         warn!("Unknown CTAPHID command {}", cmd);
@@ -272,9 +278,10 @@ impl<'a, UsbBusT: UsbBus, const MAX_MESSAGE_LEN: usize> NotWebUsb<'a, UsbBusT, M
                         CtapHidResponse {
                             cid: in_progress_transaction.cid,
                             ty: CtapHidResponseTy::Message {
-                                // only used in the initial message where it is treated as the full u2f size.
+                                // only used in the initial message where it is treated as the full u2f/cbor size.
                                 length: remaining_u2f_size as u16,
                                 data: &granted[..packet_size],
+                                ty: in_progress_transaction.message_type,
                             },
                             continuation_state: in_progress_transaction.response_continuation_state,
                         }

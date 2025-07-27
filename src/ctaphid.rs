@@ -7,8 +7,9 @@ use usbd_human_interface_device::device::fido::RawFidoReport;
 /// Represents the state of an in progress transaction.
 /// The term `transaction` comes from the CTAP spec, referring to the processing of a request/response pair.
 pub struct InProgressTransaction {
+    pub message_type: MessageType,
     pub cid: u32,
-    /// value values 0-127
+    /// valid values are 0-127
     pub request_sequence: u8,
     pub request_buffer: [u8; MAXIMUM_CTAPHID_MESSAGE],
     pub request_payload_size: usize,
@@ -19,14 +20,26 @@ pub struct InProgressTransaction {
 }
 
 #[derive(Clone, Copy)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum MessageType {
+    /// The new messages for CTAP2.
+    /// We implement only a very tiny part of this to get U2F messages working
+    Cbor,
+    /// The older style messages for CTAP1.
+    /// This is what we use for smuggling user data in.
+    U2f,
+}
+
+#[derive(Clone, Copy)]
 pub enum ContinuationState {
     Initial,
     Continuation { sequence: u8 },
 }
 
 impl InProgressTransaction {
-    pub fn new(cid: u32, request_payload_size: u16) -> Self {
+    pub fn new(message_type: MessageType, cid: u32, request_payload_size: u16) -> Self {
         InProgressTransaction {
+            message_type,
             cid,
             request_sequence: 0,
             request_buffer: [0; MAXIMUM_CTAPHID_MESSAGE],
@@ -52,11 +65,47 @@ impl InProgressTransaction {
         // if we have completely received the request, respond to it.
         self.request_payload_bytes_written += data.len();
         if self.request_payload_bytes_written >= self.request_payload_size {
-            return receive_user_request(
-                &self.request_buffer[..self.request_payload_size],
-                tx,
-                web_origin_filter,
-            );
+            let request = &self.request_buffer[..self.request_payload_size];
+            match self.message_type {
+                MessageType::Cbor => {
+                    let mut granted = tx.grant_exact(MAXIMUM_CTAPHID_MESSAGE).unwrap();
+
+                    // For browsers like chrome on linux it is sufficent to simply reply to CBOR messages with `CtapHidError::InvalidCommand`.
+                    // However all browsers using the webauthn.dll (all browsers running on windows) will give up on us unless we can tell them we only support U2F by handling the CBOR GetInfo request. 🙃
+                    // For all other CBOR messages we can just return InvalidCommand, which we do at an earlier stage.
+
+                    // To avoid pulling in an entire CBOR implementation, we just hardcode this CBOR GetInfo response which is generated like this:
+                    //
+                    // ```rust
+                    //#[derive(Debug, Serialize, Deserialize)]
+                    //struct GetInfo {
+                    //    versions: Vec<String>,
+                    //    #[serde(with = "serde_bytes")]
+                    //    aaguid: Vec<u8>,
+                    //}
+                    //let get_info = GetInfo {
+                    //    versions: vec!["U2F_V2".to_owned()],
+                    //    // a unique aaguid for not-webusb
+                    //    aaguid: vec![
+                    //        0xe3, 0xb1, 0x76, 0x8b, 0x55, 0x91, 0x4a, 0xd7, 0xb4, 0x6e, 0xac, 0xc7, 0x60, 0x84,
+                    //        0x0b, 0x3e,
+                    //    ],
+                    //};
+                    //let bytes: Vec<u8> = serde_cbor::to_vec(&get_info).unwrap();
+                    //```
+                    let get_info_response = [
+                        162, 104, 118, 101, 114, 115, 105, 111, 110, 115, 129, 102, 85, 50, 70, 95,
+                        86, 50, 102, 97, 97, 103, 117, 105, 100, 80, 227, 177, 118, 139, 85, 145,
+                        74, 215, 180, 110, 172, 199, 96, 132, 11, 62,
+                    ];
+                    let len = get_info_response.len();
+                    granted[..len].copy_from_slice(&get_info_response);
+                    granted.commit(len);
+                }
+                MessageType::U2f => {
+                    return receive_user_request(request, tx, web_origin_filter);
+                }
+            }
         }
         None
     }
@@ -82,7 +131,7 @@ impl CtapHidRequest {
         let packet = &report.packet;
         let cid = u32::from_be_bytes(packet[0..4].try_into().unwrap());
         let ty = if packet[4] & 0b10000000 == 0 {
-            CtapHidRequestTy::Continuation {
+            CtapHidRequestTy::MessageContinuation {
                 sequence: packet[4],
                 data: packet[5..].try_into().unwrap(),
             }
@@ -91,15 +140,18 @@ impl CtapHidRequest {
             let cmd = packet[4] & 0b01111111;
             match cmd {
                 0x01 => CtapHidRequestTy::Ping,
-                0x03 => CtapHidRequestTy::Message {
+                0x03 => CtapHidRequestTy::MessageInitial {
                     length: bcnt,
                     data: packet[7..].try_into().unwrap(),
+                    ty: MessageType::U2f,
                 },
                 0x06 => CtapHidRequestTy::Init {
                     nonce8: packet[7..15].try_into().unwrap(),
                 },
-                0x10 => CtapHidRequestTy::CborMessage {
-                    data: packet[4..].try_into().unwrap(),
+                0x10 => CtapHidRequestTy::MessageInitial {
+                    length: bcnt,
+                    data: packet[7..].try_into().unwrap(),
+                    ty: MessageType::Cbor,
                 },
                 0x11 => CtapHidRequestTy::Cancel,
                 cmd => CtapHidRequestTy::Unknown { cmd },
@@ -119,27 +171,26 @@ pub enum CtapHidRequestTy {
     },
     /// Send the entire raw request back as is.
     Ping,
-    /// A U2F message.
-    Message {
+    /// A U2F  or CBOR message.
+    MessageInitial {
         /// Full length of the payload, possibly this packet and one or more continuation packets.
         length: u16,
         /// packet contents.
         /// since header is 7 bytes long and packet is max 64 bytes this is max 57 bytes
         data: [u8; 57],
+        ty: MessageType,
     },
-    /// A U2F continuation packet.
+    /// A U2F or CBOR continuation packet.
     /// In theory this could be used for any command, in reality only `Message` is long enough to need it.
-    Continuation {
+    MessageContinuation {
         sequence: u8,
         /// packet contents.
         /// since continuation header is 5 bytes long and packet is max 64 bytes this is max 59 bytes
         data: [u8; 59],
     },
+    /// Cancel a current transaction
     Cancel,
-    /// Message in CBOR format, we dont support this.
-    CborMessage {
-        data: [u8; 60],
-    },
+    /// An unknown command
     Unknown {
         /// The unknown command ID
         cmd: u8,
@@ -155,12 +206,15 @@ pub struct CtapHidResponse<'a> {
 pub enum CtapHidResponseTy<'a> {
     /// Initialize
     Init(InitResponse),
+    // U2F or CBOR message response
     Message {
         /// Full length of the payload, possibly this packet and one or more continuation packets.
         length: u16,
         /// packet contents.
         /// since header is 7 bytes long and packet is max 64 bytes this is max 57 bytes
         data: &'a [u8],
+        /// Is the message CBOR or U2F?
+        ty: MessageType,
     },
     /// Use this to provide a response to a Ping or if you need to construct a custom response for any reason.
     RawReport(RawFidoReport),
@@ -217,11 +271,14 @@ impl CtapHidResponse<'_> {
                 data[16] = response.device_version_build;
                 data[17] = response.capabilities;
             }
-            CtapHidResponseTy::Message { length, data } => match self.continuation_state {
+            CtapHidResponseTy::Message { length, data, ty } => match self.continuation_state {
                 ContinuationState::Initial => {
                     CtapHeaderInitialization {
                         cid: self.cid,
-                        cmd: 0x83,
+                        cmd: match ty {
+                            MessageType::U2f => 0x83,
+                            MessageType::Cbor => 0x90,
+                        },
                         bcnt: *length,
                     }
                     .encode(report);
