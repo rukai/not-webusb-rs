@@ -8,7 +8,7 @@ An alternative to webUSB for simple usecases with better browser support and the
 Usage follows a request/response model where the browser JS or wasm sends a request to which the device must send exactly 1 response.
 
 The goal is to be a production ready library for use in real devices.
-However, while it works fine for simple use cases, it is not currently in a state where I would be comfortable deploying this in production.
+However, while it works fine for simple use cases, it needs more scrutiny and testing before I would be comfortable using it in production.
 
 not-webusb consists of:
 
@@ -41,10 +41,14 @@ For example, to round trip 5kB of data it takes the following on different brows
 * linux chrome ~9s
 * linux firefox ~13s
 
-Also, most browsers flash the entire window every time a not-webusb transfer occurs.
-However, on firefox only a small box appears instead.
+Also, most browsers flash the entire window with an alert every time a not-webusb transfer occurs.
+<details>
+<summary>Expand for GIF of the flashing window on chrome on linux</summary>
 
-TODO: Example gif
+![Demonstration of flashing box on chrome](docs/demonstration.gif)
+</details>
+
+However, on firefox, only a small non-fullscreen box appears instead.
 
 <!--
 ## Development
@@ -93,7 +97,7 @@ Flash the rot13 example firmware to a pico and then run `cargo test`.
   * Remove all possible panic paths
   * Fix demos getting stuck after an exception.
 * Internal cleanup
-  * Better seperate U2F vs CTAP vs user data layers
+  * Better separate U2F vs CTAP vs user data layers
 * I would love for this project to have a recommended webusb implementation of the fido client protocol, allowing browsers with webusb support to avoid the "touch your security key" pop ups, while keeping fido as a fallback protocol. I have no immediate plans to implement this however.
 * Long message on chrome + windows has invalid characters at the end
 * Improve handling with an actual FIDO key plugged in at the same time.
