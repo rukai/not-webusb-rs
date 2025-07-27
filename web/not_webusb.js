@@ -1,6 +1,5 @@
 _not_webusb_internal_lock = false;
 
-
 /// Takes a Uint8Array request to send to the device.
 /// Returns a Uint8Array response from the device.
 async function not_webusb_read_write(input) {
@@ -23,7 +22,6 @@ async function not_webusb_read_write(input) {
 
     var total_size = input.length + 4;
     var number_of_packets = Math.ceil(total_size / 254);
-    console.log("number_of_packets: " + number_of_packets);
 
     // initial request packets
     for (var i = 0; i < number_of_packets - 1; i++) {
@@ -48,12 +46,15 @@ async function not_webusb_read_write(input) {
     // final response packets
     while (size > 0) {
         var sig = await _not_webusb_read_write(new Uint8Array([1]));
-        response = await concat_uint8array([response, sig.slice(5, 36), sig.slice(39, 71)]);
+        response = await concat_uint8array([
+            response,
+            sig.slice(5, Math.min(36, 5 + size)),
+            sig.slice(39, Math.min(71, 39 + size - 31))
+        ]);
         size -= 62;
     }
 
     _not_webusb_internal_lock = false;
-    console.log(response);
 
     return response;
 }
