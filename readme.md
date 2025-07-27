@@ -17,9 +17,11 @@ not-webusb consists of:
   * [sample javascript code](web/not_webusb.js)
   * Or, a rust crate for wasm clients (Not implemented yet)
 
-not-webusb is well suited for occasional one time operations. e.g. flashing key mappings for a keyboard.
+## Use cases
 
-Constant live communication with a device is possible, but poorly suited. e.g. reading sensor data.
+* not-webusb is well suited for occasional one time operations, with small amounts of data. e.g. flashing key mappings for a keyboard
+* Sending large amounts of data is possible but very slow. e.g. firmware updates
+* Constant live communication with a device is possible, but poorly suited. e.g. reading sensor data
 
 ## Browser support
 
@@ -33,8 +35,11 @@ not-webusb supports all major browsers, having been tested on:
 
 ## Downsides
 
-Probably a fair bit slower compared to webusb, since it has to go through a lot of overhead with the U2F protocol.
-TODO: get some actual measurements done.
+Far slower than webusb since it has to go through a lot of overhead with the U2F protocol.
+For example, to round trip 5kB of data it takes the following on different browsers:
+
+* linux chrome ~9s
+* linux firefox ~13s
 
 Also, most browsers flash the entire window every time a not-webusb transfer occurs.
 However, on firefox only a small box appears instead.
@@ -85,6 +90,10 @@ Flash the rot13 example firmware to a pico and then run `cargo test`.
 
 * Make protocol implementation more robust
   * transaction timeout
+  * Remove all possible panic paths
+  * Fix demos getting stuck after an exception.
 * Internal cleanup
+  * Better seperate U2F vs CTAP vs user data layers
 * I would love for this project to have a recommended webusb implementation of the fido client protocol, allowing browsers with webusb support to avoid the "touch your security key" pop ups, while keeping fido as a fallback protocol. I have no immediate plans to implement this however.
 * Long message on chrome + windows has invalid characters at the end
+* Improve handling with an actual FIDO key plugged in at the same time.
