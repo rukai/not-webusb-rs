@@ -21,7 +21,7 @@ not-webusb consists of:
 
 * not-webusb is well suited for occasional one time operations, with small amounts of data. e.g. flashing key mappings for a keyboard
 * Sending large amounts of data is possible but very slow. e.g. firmware updates
-* Constant live communication with a device is possible, but poorly suited. e.g. reading sensor data
+* Constant live communication with a device is possible, but poorly suited due to flashing alerts. e.g. reading sensor data
 
 ## Browser support
 
@@ -95,8 +95,9 @@ Flash the rot13 example firmware to a pico and then run `cargo test`.
 * Make protocol implementation more robust
   * transaction timeout
   * Remove all possible panic paths
-  * Fix demos getting stuck after an exception.
+  * Improve handling with an actual FIDO key plugged in at the same time.
 * Internal cleanup
   * Better separate U2F vs CTAP vs user data layers
-* I would love for this project to have a recommended webusb implementation of the fido client protocol, allowing browsers with webusb support to avoid the "touch your security key" pop ups, while keeping fido as a fallback protocol. I have no immediate plans to implement this however.
-* Improve handling with an actual FIDO key plugged in at the same time.
+* more batteries
+  * I would love for this project to have a recommended webusb implementation of the fido client protocol, allowing browsers with webusb support to avoid the "touch your security key" pop ups, while keeping fido as a fallback protocol. I have no immediate plans to implement this however.
+  * rust wasm implementation of the browser side logic
