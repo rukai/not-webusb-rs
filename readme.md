@@ -28,10 +28,10 @@ not-webusb consists of:
 Unlike webusb which supports only chrome and edge.
 not-webusb supports all major browsers, having been tested on:
 
-* Firefox Desktop + Android
-* Chrome Desktop + Android
+* Firefox (Linux + Windows + Android)
+* Chrome (Linux + Windows + Android)
 * Edge
-* Safari Desktop
+* Safari Desktop (sometimes gets stuck)
 
 ## Downsides
 
