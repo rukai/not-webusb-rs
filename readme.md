@@ -50,14 +50,6 @@ Also, most browsers flash the entire window with an alert every time a not-webus
 
 However, on firefox, only a small non-fullscreen box appears instead.
 
-<!--
-## Development
-
-Here is a video explaining the development process behind not-webusb.
-
-[![youtube video](https://img.youtube.com/vi/9YmU7DN4t2M/0.jpg)](https://youtu.be/9YmU7DN4t2M)
--->
-
 ## How does it work though???
 
 not-webusb is built on top of [U2F](https://en.wikipedia.org/wiki/Universal_2nd_Factor) (the legacy part of [FIDO](https://en.wikipedia.org/wiki/FIDO_Alliance)) the protocol for security keys.
@@ -65,6 +57,12 @@ However instead of implementing a security key, not-webusb smuggles data through
 This is a fundamental part of the protocol and cannot be removed by browsers without rendering large numbers of currently working security keys unusable.
 
 The idea comes from the [I Cant Believe Its Not WebUSB](https://github.com/ArcaneNibble/i-cant-believe-its-not-webusb) demo, which uses the same fields to control an LED from the browser.
+
+## Development
+
+Here is a video explaining the development process behind not-webusb.
+
+[![youtube video](https://img.youtube.com/vi/1Zo4CKk5WPk/0.jpg)](https://youtu.be/1Zo4CKk5WPk)
 
 ## Examples
 
